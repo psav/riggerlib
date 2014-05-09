@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import defaultdict, Mapping
 from multiprocessing.pool import ThreadPool
 from funcsigs import signature
 import hashlib
@@ -78,8 +78,8 @@ class Rigger(object):
                 self.pre_callbacks[hook_name].values(), kwargs)
 
         #Now we can update the kwargs passed to the real hook with the updates
-        self.global_data.update(globals_updates)
-        kwargs.update(kwargs_updates)
+        self.update(self.global_data, globals_updates)
+        self.update(kwargs, kwargs_updates)
 
         #Now fire off each plugin hook
         event_hooks = []
@@ -91,8 +91,8 @@ class Rigger(object):
         kwargs_updates, globals_updates = self.process_callbacks(event_hooks, kwargs)
 
         #One more update for hte post_hook callback
-        self.global_data.update(globals_updates)
-        kwargs.update(kwargs_updates)
+        self.update(self.global_data, globals_updates)
+        self.update(kwargs, kwargs_updates)
 
         #Finally any post-hook callbacks
         if self.post_callbacks.get(hook_name):
@@ -124,9 +124,9 @@ class Rigger(object):
             obtain_result = result.get()
             if obtain_result:
                 if obtain_result[0]:
-                    local_collect_dict.update(obtain_result[0])
+                    self.update(local_collect_dict, obtain_result[0])
                 if obtain_result[1]:
-                    global_collect_dict.update(obtain_result[1])
+                    self.update(global_collect_dict, obtain_result[1])
         return local_collect_dict, global_collect_dict
 
     def build_kwargs(self, args, kwargs):
@@ -168,9 +168,15 @@ class Rigger(object):
             #print "Registering plugin {}".format(plugin_name)
             self.plugins[plugin_name] = cls
 
-    def get_instance(self, name):
+    def get_instance_obj(self, name):
         if name in self.instances:
             return self.instances[name].obj
+        else:
+            return None
+
+    def get_instance_data(self, name):
+        if name in self.instances:
+            return self.instances[name].data
         else:
             return None
 
@@ -180,6 +186,19 @@ class Rigger(object):
             'func': callback,
             'args': signature(callback).parameters.keys()
         }
+
+    def update(self, orig_dict, updates):
+        """
+        Update dict objects with merge.
+        """
+        for key, val in updates.iteritems():
+            if isinstance(val, Mapping):
+                orig_dict[key] = self.update(orig_dict.get(key, {}), val)
+            elif isinstance(orig_dict, Mapping):
+                orig_dict[key] = updates[key]
+            else:
+                orig_dict = {key: updates[key]}
+        return orig_dict
 
 
 class RiggerPluginInstance(object):
