@@ -135,8 +135,9 @@ class Rigger(object):
         """
         returned_args = {}
         returned_args.update({name: self.global_data[name] for name in args
-                              if self.global_data.get(name, None)})
-        returned_args.update({name: kwargs[name] for name in args if kwargs.get(name, None)})
+                              if self.global_data.get(name, None) is not None})
+        returned_args.update({name: kwargs[name] for name in args
+                              if kwargs.get(name, None) is not None})
         return returned_args
 
     def register_hook_callback(self, hook_name=None, ctype="pre", callback=None, name=None):
