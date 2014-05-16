@@ -1,6 +1,7 @@
 from collections import defaultdict, Mapping
 from multiprocessing.pool import ThreadPool
 from funcsigs import signature
+from functools import wraps
 import hashlib
 import sys
 import time
@@ -216,6 +217,17 @@ class RiggerBasePlugin(object):
         self.ident = ident
         self.data = data
         self.plugin_initialize()
+        self.configured = False
+
+    @staticmethod
+    def check_configured(func):
+        @wraps(func)
+        def inner(self, *args, **kwargs):
+            if self.configured:
+                return func(self, *args, **kwargs)
+        # If python3.2, this should _could_ be removed
+        inner.__wrapped__ = func
+        return inner
 
     def register_plugin_hook(self, event, callback):
         """
