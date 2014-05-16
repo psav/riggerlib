@@ -45,8 +45,7 @@ class Rigger(object):
         self.instances = {}
         plugins = self.config.get("plugins", None)
         for ident, config in plugins.iteritems():
-            if config.get('enabled', None):
-                self.setup_instance(ident, config)
+            self.setup_instance(ident, config)
 
     def setup_instance(self, ident, config):
         """
@@ -85,7 +84,8 @@ class Rigger(object):
         event_hooks = []
         for instance_name, instance in self.instances.iteritems():
             callbacks = instance.obj.callbacks
-            if callbacks.get(hook_name):
+            enabled = instance.data.get('enabled', None)
+            if callbacks.get(hook_name) and enabled:
                 cb = callbacks[hook_name]
                 event_hooks.append(cb)
         kwargs_updates, globals_updates = self.process_callbacks(event_hooks, kwargs)
