@@ -188,6 +188,13 @@ class Rigger(object):
         else:
             return None
 
+    def configure_plugin(self, name, *args, **kwargs):
+        obj = self.get_instance_obj(name)
+        if obj:
+            obj.configure(*args, **kwargs)
+        else:
+            print "Instance: [{}] does not exist, is your configuration correct?".format(name)
+
     @staticmethod
     def create_callback(callback):
         params = signature(callback).parameters
