@@ -8,6 +8,10 @@ import time
 import yaml
 
 
+class _realempty():
+    pass
+
+
 class Rigger(object):
     def __init__(self, config_file):
         self.pre_callbacks = defaultdict(dict)
@@ -111,7 +115,8 @@ class Rigger(object):
         results_list = []
         pool = ThreadPool(10)
         for cb in callback_collection:
-            missing = list(set(cb['args']).difference(set(self.global_data.keys()))
+            required_args = [sig for sig in cb['args'] if isinstance(cb['args'][sig].default, type)]
+            missing = list(set(required_args).difference(set(self.global_data.keys()))
                            .difference(set(kwargs.keys())))
             if not missing:
                 new_kwargs = self.build_kwargs(cb['args'], kwargs)
@@ -136,9 +141,10 @@ class Rigger(object):
         """
         returned_args = {}
         returned_args.update({name: self.global_data[name] for name in args
-                              if self.global_data.get(name, None) is not None})
+                              if not isinstance(self.global_data.get(name,
+                                                                     _realempty()), _realempty)})
         returned_args.update({name: kwargs[name] for name in args
-                              if kwargs.get(name, None) is not None})
+                              if not isinstance(kwargs.get(name, _realempty()), _realempty)})
         return returned_args
 
     def register_hook_callback(self, hook_name=None, ctype="pre", callback=None, name=None):
@@ -184,9 +190,10 @@ class Rigger(object):
 
     @staticmethod
     def create_callback(callback):
+        params = signature(callback).parameters
         return {
             'func': callback,
-            'args': signature(callback).parameters.keys()
+            'args': params
         }
 
     def update(self, orig_dict, updates):
