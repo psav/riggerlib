@@ -18,6 +18,7 @@ class Rigger(object):
         self.post_callbacks = defaultdict(dict)
         self.plugins = {}
         self.config_file = config_file
+        self.squash_exceptions = False
 
     def read_config(self, config_file):
         """
@@ -127,7 +128,15 @@ class Rigger(object):
         pool.close()
         pool.join()
         for result in results_list:
-            obtain_result = result.get()
+            try:
+                obtain_result = result.get()
+            except:
+                if self.squash_exceptions:
+                    obtain_result = None
+                    self.handle_failure(sys.exc_info())
+                else:
+                    raise
+
             if obtain_result:
                 if obtain_result[0]:
                     self.update(local_collect_dict, obtain_result[0])
@@ -215,6 +224,9 @@ class Rigger(object):
             else:
                 orig_dict = {key: updates[key]}
         return orig_dict
+
+    def handle_failure(self, exc):
+        print exc
 
 
 class RiggerPluginInstance(object):
