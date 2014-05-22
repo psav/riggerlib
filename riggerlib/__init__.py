@@ -71,7 +71,7 @@ class Rigger(object):
 
     def fire_hook(self, hook_name, **kwargs):
         """
-        Fires a specific hook and gives context data
+        Takes a hook_name and a selection of kwargs and fires off the appropriate callbacks
         """
         kwargs_updates = {}
         globals_updates = {}
@@ -104,7 +104,9 @@ class Rigger(object):
         #Finally any post-hook callbacks
         if self.post_callbacks.get(hook_name):
             #print "Running post hook callback for {}".format(hook_name)
-            self.process_callbacks(self.post_callbacks[hook_name].values(), kwargs)
+            kwargs_updates, globals_updates = self.process_callbacks(
+                self.post_callbacks[hook_name].values(), kwargs)
+        self.update(self.global_data, globals_updates)
 
     def process_callbacks(self, callback_collection, kwargs):
         """
