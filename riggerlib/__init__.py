@@ -49,6 +49,7 @@ class Rigger(object):
         instance of the plugin.
         """
         self.instances = {}
+        self._threaded = self.config.get("threaded", True)
         plugins = self.config.get("plugins", None)
         for ident, config in plugins.iteritems():
             self.setup_instance(ident, config)
@@ -111,38 +112,55 @@ class Rigger(object):
         are correct and builds a new kwargs dict with only those values
         to avoid Exceptions related to argnames
         """
-        local_collect_dict = {}
-        global_collect_dict = {}
-        results_list = []
-        pool = ThreadPool(10)
+        loc_collect = {}
+        glo_collect = {}
+        if self._threaded:
+            results_list = []
+            pool = ThreadPool(10)
         for cb in callback_collection:
             required_args = [sig for sig in cb['args'] if isinstance(cb['args'][sig].default, type)]
             missing = list(set(required_args).difference(set(self.global_data.keys()))
                            .difference(set(kwargs.keys())))
             if not missing:
                 new_kwargs = self.build_kwargs(cb['args'], kwargs)
-                results_list.append(pool.apply_async(cb['func'], [], new_kwargs))
+                if self._threaded:
+                    results_list.append(pool.apply_async(cb['func'], [], new_kwargs))
+                else:
+                    obtain_result = self.handle_results(cb['func'], [], new_kwargs)
+                    loc_collect, glo_collect = self.handle_collects(
+                        obtain_result, loc_collect, glo_collect)
             else:
                 raise Exception('Function {} is missing kwargs {}'
                                 .format(cb['func'].__name__, missing))
-        pool.close()
-        pool.join()
-        for result in results_list:
-            try:
-                obtain_result = result.get()
-            except:
-                if self.squash_exceptions:
-                    obtain_result = None
-                    self.handle_failure(sys.exc_info())
-                else:
-                    raise
 
-            if obtain_result:
-                if obtain_result[0]:
-                    self.update(local_collect_dict, obtain_result[0])
-                if obtain_result[1]:
-                    self.update(global_collect_dict, obtain_result[1])
-        return local_collect_dict, global_collect_dict
+        if self._threaded:
+            pool.close()
+            pool.join()
+            for result in results_list:
+                obtain_result = self.handle_results(result.get, [], {})
+                loc_collect, glo_collect = self.handle_collects(
+                    obtain_result, loc_collect, glo_collect)
+        return loc_collect, glo_collect
+
+    def handle_results(self, call, args, kwargs):
+        try:
+            obtain_result = call(*args, **kwargs)
+        except:
+            if self.squash_exceptions:
+                obtain_result = None
+                self.handle_failure(sys.exc_info())
+            else:
+                raise
+
+        return obtain_result
+
+    def handle_collects(self, result, loc_collect, glo_collect):
+        if result:
+            if result[0]:
+                self.update(loc_collect, result[0])
+            if result[1]:
+                self.update(glo_collect, result[1])
+        return loc_collect, glo_collect
 
     def build_kwargs(self, args, kwargs):
         """
