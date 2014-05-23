@@ -28,7 +28,7 @@ for.
 
 To begin with, we need to create a plugin for Rigger. Consider the following piece of code::
 
-    from artifactor import RiggerBasePlugin
+    from riggerlib import RiggerBasePlugin
     import time
 
 
@@ -79,7 +79,7 @@ provide a single set of keyword arguments that are passed to the hook or callbac
 
 In the example above would probably fire the hook with something like this::
 
-    art.fire_hook('start_test', test_name="my_test", test_location="var/test/")
+    rigger.fire_hook('start_test', test_name="my_test", test_location="var/test/")
 
 Notice that we don't specify what the artifact_path value is. In the concept of testing, we may
 want to store multiple artifacts and so we would not want each plugin to have to compute the
@@ -110,5 +110,5 @@ Rigger takes few options to start, it, an example is shown below::
             plugin: test
 
 *  ``squash_exceptions`` option tells Rigger whether to ignore exceptions that happen inside
-  the ``fire_hook()`` call and just log them, or if it should raise them.
+   the ``fire_hook()`` call and just log them, or if it should raise them.
 *  ``threaded`` option tells Rigger to run the fire_hook plugins as threads or sequentially.
