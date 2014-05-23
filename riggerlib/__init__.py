@@ -9,10 +9,20 @@ import yaml
 
 
 class _realempty():
+    """ A dummy class to be able to differentiate between None and "Really None". """
     pass
 
 
 class Rigger(object):
+    """ A Rigger event framework instance.
+
+    The Rigger object holds all configuration and instances of plugins. By default Rigger accepts
+    a configuration file name to parse, though it is perfectly acceptable to pass the configuration
+    into the ``self.config`` attribute.
+
+    Args:
+        config_file: A configuration file holding all of Riggers base and plugin configuration.
+    """
     def __init__(self, config_file):
         self.pre_callbacks = defaultdict(dict)
         self.post_callbacks = defaultdict(dict)
@@ -22,7 +32,14 @@ class Rigger(object):
 
     def read_config(self, config_file):
         """
-        Reads in the config file and parses the yaml data
+        Reads in the config file and parses the yaml data.
+
+        Args:
+            config_file: A configuration file holding all of Riggers base and plugin configuration.
+
+        Raises:
+            IOError: If the file can not be read.
+            Exception: If there is any error parsing the configuration file.
         """
         try:
             with open(config_file, "r") as stream:
@@ -38,15 +55,16 @@ class Rigger(object):
 
     def parse_config(self):
         """
-        Reads the config data and sets up values
+        Takes the configuration data from ``self.config`` and sets up the plugin instances.
         """
         self.read_config(self.config_file)
         self.setup_plugin_instances()
 
     def setup_plugin_instances(self):
         """
-        Sets up instances into a dict called instances and instantiates each
-        instance of the plugin.
+        Sets up instances into a dict called ``self.instances`` and instantiates each
+        instance of the plugin. It also sets the ``self._threaded`` option to determine
+        if plugins will be processed synchronously or asynchronously.
         """
         self.instances = {}
         self._threaded = self.config.get("threaded", True)
@@ -56,7 +74,12 @@ class Rigger(object):
 
     def setup_instance(self, ident, config):
         """
-        Sets up a single instance
+        Sets up a single instance into the ``self.instances`` dict. If the instance does
+        not exist, a warning is printed out.
+
+        Args:
+            ident: A plugin instance identifier.
+            config: Configuration dict from the yaml.
         """
         plugin_name = config.get('plugin', None)
         if plugin_name in self.plugins:
@@ -67,11 +90,25 @@ class Rigger(object):
         else:
             msg = "Plugin [{}] was not found, "\
                   "disabling instance [{}]".format(plugin_name, ident)
-            print msg
+            self.log_message(msg)
 
     def fire_hook(self, hook_name, **kwargs):
         """
-        Takes a hook_name and a selection of kwargs and fires off the appropriate callbacks
+        Takes a hook_name and a selection of kwargs and fires off the appropriate callbacks.
+
+        This function is the guts of Rigger and is responsible for running the callback and
+        hook functions. It first loads some blank dicts to collect the updates for the local
+        and global namespaces. After this, it loads the pre_callback functions along with
+        the kwargs into the callback collector processor.
+
+        The return values are then classifed into local and global dicts and updates proceed.
+        After this, the plugin hooks themselves are then run using the same methodology. Their
+        return values are merged with the existing dicts and then the same process happens
+        for the post_callbacks.
+
+        Args:
+            hook_name: The name of the hook to fire.
+            kwargs: The kwargs to pass to the hooks.
         """
         kwargs_updates = {}
         globals_updates = {}
@@ -110,9 +147,29 @@ class Rigger(object):
 
     def process_callbacks(self, callback_collection, kwargs):
         """
-        Checks to ensure that all the keywords for the function
-        are correct and builds a new kwargs dict with only those values
-        to avoid Exceptions related to argnames
+        Processes a collection of callbacks or hooks for a particular event, namely pre, hook or
+        post.
+
+        The functions are passed in as an array to ``callback_collection`` and process callbacks
+        first iterates each function and ensures that each one has the correct arguments available
+        to it. If not, an Exception is raised. Then, depending on whether Threading is enabled or
+        not, the functions are either run sequentially, or loaded into a ThreadPool and executed
+        asynchronously.
+
+        The returned local and global updates are either collected and processed sequentially, as
+        in the case of the non-threaded behaviour, or collected at the end of the
+        callback_collection processing and handled there.
+
+        Note:
+            It is impossible to predict the order of the functions being run. If the order is
+            important, it is advised to create a second event hook that will be fired before the
+            other. Rigger has no concept of hook or callback order and is unlikely to ever have.
+
+        Args:
+            callback_collection: A list of functions to call.
+            kwargs: A set of kwargs to pass to the functions.
+
+        Returns: A tuple of local and global namespace updates.
         """
         loc_collect = {}
         glo_collect = {}
@@ -145,6 +202,17 @@ class Rigger(object):
         return loc_collect, glo_collect
 
     def handle_results(self, call, args, kwargs):
+        """
+        Handles results and depending on configuration, squashes exceptions and logs or
+        returns the obtained result.
+
+        Args:
+            call: The function call.
+            args: The positional arguments.
+            kwargs: The keyword arguments.
+
+        Returns: The obtained result of the callback or hook.
+        """
         try:
             obtain_result = call(*args, **kwargs)
         except:
@@ -157,6 +225,18 @@ class Rigger(object):
         return obtain_result
 
     def handle_collects(self, result, loc_collect, glo_collect):
+        """
+        Handles extracting the information from the hook/callback result.
+
+        If the hook/callback returns None, then the dicts are returned unaltered, else
+        they are updated with local, global namespace updates.
+
+        Args:
+            result: The result to process.
+            loc_collect: The local namespace updates collection.
+            glo_collect: The global namespace updates collection.
+        Returns: A tuple containing the local and global updates.
+        """
         if result:
             if result[0]:
                 self.update(loc_collect, result[0])
@@ -166,7 +246,19 @@ class Rigger(object):
 
     def build_kwargs(self, args, kwargs):
         """
-        Builds a new kwargs from a list of allowed args
+        Builds a new kwargs from a list of allowed args.
+
+        Functions only receive a single set of kwargs, and so the global and local namespaces
+        have to be collapsed. In this way, the local overrides the global namespace, hence if
+        a key exists in both local and global, the local value will be passed to the function
+        under the the key name and the global value will be forgotten.
+
+        The args parameter ensures that only the expected arguments are supplied.
+
+        Args:
+            args: A list of allowed argument names
+            kwargs: A dict of kwargs from the local namespace.
+        Returns: A consolidated global/local namespace with local overrides.
         """
         returned_args = {}
         returned_args.update({name: self.global_data[name] for name in args
@@ -178,7 +270,17 @@ class Rigger(object):
 
     def register_hook_callback(self, hook_name=None, ctype="pre", callback=None, name=None):
         """
-        Registers pre and post callbacks
+        Registers pre and post callbacks.
+
+        Takes a callback function and assigns it to the hook_name with an optional identifier.
+        The optional identifier makes it possible to hot bind functions into hooks and to
+        remove them at a later date with ``unregister_hook_callback``.
+
+        Args:
+            hook_name: The name of the event hook to respond to.
+            ctype: The call back type, either ``pre`` or ``post``.
+            callback: The callback function.
+            name: An optional name for the callback instance binding.
         """
         if hook_name and callback:
             callback_instance = self.create_callback(callback)
@@ -191,12 +293,31 @@ class Rigger(object):
                 self.post_callbacks[hook_name][name] = callback_instance
 
     def unregister_hook_callback(self, hook_name, ctype, name):
+        """
+        Unregisters a pre or post callback.
+
+        If the binding has a known name, this function allows the removal of a binding.
+
+        Args:
+            hook_name: The event hook name.
+            ctype: The callback type, either ``pre`` or ``post``.
+            name: An optional name for the callback instance binding.
+        """
         if ctype == "pre":
             del self.pre_callbacks[hook_name][name]
         elif ctype == "post":
             del self.post_callbacks[hook_name][name]
 
     def register_plugin(self, cls, plugin_name=None):
+        """ Registers a plugin class to a name.
+
+        Multiple instances of the same plugin can be used in Rigger, ``self.plugins``
+        stores un-initialized class defintions to be used by ``setup_instances``.
+
+        Args:
+            cls: The class.
+            plugin_name: The name of the plugin.
+        """
         if plugin_name in self.plugins:
             print "Plugin name already taken [{}]".format(plugin_name)
         elif plugin_name is None:
@@ -206,18 +327,40 @@ class Rigger(object):
             self.plugins[plugin_name] = cls
 
     def get_instance_obj(self, name):
+        """
+        Gets the instance object for a given ident name.
+
+        Args:
+            name: The ident name of the instance.
+        Returns: The object of the instance.
+        """
         if name in self.instances:
             return self.instances[name].obj
         else:
             return None
 
     def get_instance_data(self, name):
+        """
+        Gets the instance data(config) for a given ident name.
+
+        Args:
+            name: The ident name of the instance.
+        Returns: The data(config) of the instance.
+        """
         if name in self.instances:
             return self.instances[name].data
         else:
             return None
 
     def configure_plugin(self, name, *args, **kwargs):
+        """
+        Attempts to configure an instance, passing it the args and kwargs.
+
+        Args:
+            name: The ident name of the instance.
+            args: The positional args.
+            kwargs: The keyword arguments.
+        """
         obj = self.get_instance_obj(name)
         if obj:
             obj.configure(*args, **kwargs)
@@ -226,6 +369,14 @@ class Rigger(object):
 
     @staticmethod
     def create_callback(callback):
+        """
+        Simple function to inspect a function and return it along with it param names wrapped
+        up in a nice dict. This forms a callback object.
+
+        Args:
+            callback: The callback function.
+        Returns: A dict of function and param names.
+        """
         params = signature(callback).parameters
         return {
             'func': callback,
@@ -234,7 +385,11 @@ class Rigger(object):
 
     def update(self, orig_dict, updates):
         """
-        Update dict objects with merge.
+        Update dict objects with recursive merge.
+
+        Args:
+            orig_dict: The original dict.
+            updates: The updates to merge with the dictionary.
         """
         for key, val in updates.iteritems():
             if isinstance(val, Mapping):
@@ -246,7 +401,16 @@ class Rigger(object):
         return orig_dict
 
     def handle_failure(self, exc):
-        print exc
+        """
+        Handles an exception. It is expected that this be overidden.
+        """
+        self.log_message(exc)
+
+    def log_message(self, message):
+        """
+        "Logs" a message. It is expected that this be overidden.
+        """
+        print message
 
 
 class RiggerPluginInstance(object):
@@ -267,6 +431,7 @@ class RiggerBasePlugin(object):
 
     @staticmethod
     def check_configured(func):
+        """Checks if a plugin is configured before proceeding"""
         @wraps(func)
         def inner(self, *args, **kwargs):
             if self.configured:
