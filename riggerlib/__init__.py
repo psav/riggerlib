@@ -29,6 +29,7 @@ class Rigger(object):
         self.plugins = {}
         self.config_file = config_file
         self.squash_exceptions = False
+        self.initialized = False
 
     def read_config(self, config_file):
         """
@@ -67,8 +68,8 @@ class Rigger(object):
         if plugins will be processed synchronously or asynchronously.
         """
         self.instances = {}
-        self._threaded = self.config.get("threaded", True)
-        plugins = self.config.get("plugins", None)
+        self._threaded = self.config.get("threaded", False)
+        plugins = self.config.get("plugins", {})
         for ident, config in plugins.iteritems():
             self.setup_instance(ident, config)
 
@@ -81,7 +82,7 @@ class Rigger(object):
             ident: A plugin instance identifier.
             config: Configuration dict from the yaml.
         """
-        plugin_name = config.get('plugin', None)
+        plugin_name = config.get('plugin', {})
         if plugin_name in self.plugins:
             obj = self.plugins[plugin_name]
             if obj:
@@ -110,6 +111,8 @@ class Rigger(object):
             hook_name: The name of the hook to fire.
             kwargs: The kwargs to pass to the hooks.
         """
+        if not self.initialized:
+            return
         kwargs_updates = {}
         globals_updates = {}
         kwargs.update({'config': self.config})
