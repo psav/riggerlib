@@ -2,15 +2,56 @@ from collections import defaultdict, Mapping
 from multiprocessing.pool import ThreadPool
 from funcsigs import signature
 from functools import wraps
+import atexit
 import hashlib
+import json
+import Queue
+import socket
+import SocketServer
 import sys
+import threading
 import time
 import yaml
+
+
+_global_queue = Queue.Queue()
+_background_queue = Queue.Queue()
+_server = None
 
 
 class _realempty():
     """ A dummy class to be able to differentiate between None and "Really None". """
     pass
+
+
+class ThreadedTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
+    pass
+
+
+class ThreadedRiggerHandler(SocketServer.BaseRequestHandler):
+    """
+    A SocketServer Handler that waits for TCP connections and deals with them accordingly by
+    placing them onto the _global_queue for processing.
+    """
+    def handle(self):
+        self.data = ""
+        while True:
+            data_buffer = self.request.recv(1024)
+            if data_buffer:
+                self.data += data_buffer
+                if "\0" in data_buffer:
+                    complete_messages = self.data.split("\0")
+                    for message in complete_messages[:-1]:
+                        try:
+                            json_dict = json.loads(message)
+                            _global_queue.put(json_dict)
+                        except ValueError:
+                            pass
+                    self.data = complete_messages[-1]
+            else:
+                break
+        response = "OK"
+        self.request.sendall(response)
 
 
 class Rigger(object):
@@ -24,12 +65,63 @@ class Rigger(object):
         config_file: A configuration file holding all of Riggers base and plugin configuration.
     """
     def __init__(self, config_file):
+        self.gdl = threading.Lock()
         self.pre_callbacks = defaultdict(dict)
         self.post_callbacks = defaultdict(dict)
         self.plugins = {}
         self.config_file = config_file
         self.squash_exceptions = False
         self.initialized = False
+        self._server = None
+        self._t = threading.Thread(target=self.process_queue)
+        self._t.daemon = True
+        self._t.start()
+        self._bt = threading.Thread(target=self.process_background_queue)
+        self._bt.daemon = True
+        self._bt.start()
+
+    def process_queue(self):
+        """
+        The ``process_queue`` thread manages taking events on and off of the global queue.
+        Both TCP and in-object fire_hooks place events onto the global_queue and these are both
+        handled by the same handler called ``process_hook``. If there is an exception during
+        processing, the exception is printed and execution continues.
+        """
+        while True:
+            if _global_queue:
+                if not _global_queue.empty():
+                    obj = _global_queue.get()
+                    try:
+                        self.process_hook(obj['hook_name'], **obj['data'])
+                    except Exception as e:
+                        self.log_message(e)
+                    _global_queue.task_done()
+            else:
+                break
+            time.sleep(0.1)
+
+    def process_background_queue(self):
+        """
+        The ``process_background_queue`` manages the hooks which have been backgrounded. In this
+        respect the tasks that are completed are not required to continue with the test and as such
+        can be forgotten about. An example of this would be some that sends an email, or tars up
+        files, it has all the information it needs and the main process doesn't need to wait for it
+        to complete.
+        """
+        while True:
+            if _background_queue:
+                if not _background_queue.empty():
+                    obj = _background_queue.get()
+                    try:
+                        local, globals_updates = self.process_callbacks(obj['cb'], obj['kwargs'])
+                        with self.gdl:
+                            self.update(self.global_data, globals_updates)
+                    except Exception as e:
+                        self.log_message(e)
+                    _background_queue.task_done()
+            else:
+                break
+            time.sleep(0.1)
 
     def read_config(self, config_file):
         """
@@ -60,6 +152,7 @@ class Rigger(object):
         """
         self.read_config(self.config_file)
         self.setup_plugin_instances()
+        self.start_server()
 
     def setup_plugin_instances(self):
         """
@@ -93,7 +186,37 @@ class Rigger(object):
                   "disabling instance [{}]".format(plugin_name, ident)
             self.log_message(msg)
 
+    def start_server(self):
+        """
+        Starts the TCP server if the ``server_enabled`` is True in the config.
+        """
+        global _server
+        self._server_hostname = self.config.get('server_address', '127.0.0.1')
+        self._server_port = self.config.get('server_port', 21212)
+        self._server_enable = self.config.get('server_enabled', False)
+        if self._server_enable:
+            _server = ThreadedTCPServer((self._server_hostname, self._server_port),
+                                        ThreadedRiggerHandler)
+            ip, port = _server.server_address
+
+            server_thread = threading.Thread(target=_server.serve_forever)
+            server_thread.daemon = True
+            server_thread.start()
+
     def fire_hook(self, hook_name, **kwargs):
+        """
+        Parses the hook information into a dict for passing to process_hook. This is used
+        to enable both the TCP and in-object fire_hook methods to use the same process_hook
+        method call.
+
+        Args:
+            hook_name: The name of the hook to fire.
+            kwargs: The kwargs to pass to the hooks.
+
+        """
+        _global_queue.put({'hook_name': hook_name, 'data': kwargs})
+
+    def process_hook(self, hook_name, **kwargs):
         """
         Takes a hook_name and a selection of kwargs and fires off the appropriate callbacks.
 
@@ -106,6 +229,11 @@ class Rigger(object):
         After this, the plugin hooks themselves are then run using the same methodology. Their
         return values are merged with the existing dicts and then the same process happens
         for the post_callbacks.
+
+        Note: If the instance of the plugin has been marked as a background instance, and hooks
+              which are called in that instance will be backgrounded. The hook will also not
+              be able to return any data to the post-hook callback, although updates to globals
+              will be processed as and when the backgrounded task is completed.
 
         Args:
             hook_name: The name of the hook to fire.
@@ -124,7 +252,8 @@ class Rigger(object):
                 self.pre_callbacks[hook_name].values(), kwargs)
 
         #Now we can update the kwargs passed to the real hook with the updates
-        self.update(self.global_data, globals_updates)
+        with self.gdl:
+            self.update(self.global_data, globals_updates)
         self.update(kwargs, kwargs_updates)
 
         #Now fire off each plugin hook
@@ -134,11 +263,15 @@ class Rigger(object):
             enabled = instance.data.get('enabled', None)
             if callbacks.get(hook_name) and enabled:
                 cb = callbacks[hook_name]
-                event_hooks.append(cb)
+                if instance.data.get('background', False):
+                    _background_queue.put({'cb': [cb], 'kwargs': kwargs})
+                else:
+                    event_hooks.append(cb)
         kwargs_updates, globals_updates = self.process_callbacks(event_hooks, kwargs)
 
         #One more update for hte post_hook callback
-        self.update(self.global_data, globals_updates)
+        with self.gdl:
+            self.update(self.global_data, globals_updates)
         self.update(kwargs, kwargs_updates)
 
         #Finally any post-hook callbacks
@@ -146,7 +279,8 @@ class Rigger(object):
             #print "Running post hook callback for {}".format(hook_name)
             kwargs_updates, globals_updates = self.process_callbacks(
                 self.post_callbacks[hook_name].values(), kwargs)
-        self.update(self.global_data, globals_updates)
+        with self.gdl:
+            self.update(self.global_data, globals_updates)
 
     def process_callbacks(self, callback_collection, kwargs):
         """
@@ -453,3 +587,55 @@ class RiggerBasePlugin(object):
         hook_fire.
         """
         self.callbacks[event] = Rigger.create_callback(callback)
+
+
+class RiggerClient(object):
+    """
+    A RiggerClient object allows TCP interaction with a Rigger instance running the TCP server.
+    It takes the hook fire information, serializes it to JSON format and passes it over the TCP
+    connection.
+
+    Args:
+        address: The address of the Rigger TCP server.
+        port: The port of the Rigger TCP server, usually 21212.
+    """
+
+    def __init__(self, address, port):
+        self.address = address
+        self.port = port
+
+    def fire_hook(self, hook_name, **kwargs):
+        """
+        This function acts identically to the in-object function, it just serializes the data
+        and passes it over TCP.
+
+        Args:
+            hook_name: The name of the hook to fire.
+            kwargs: The kwargs to pass to the hooks.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((self.address, self.port))
+        try:
+            raw_data = {'hook_name': hook_name, 'data': kwargs}
+            packet_data = json.dumps(raw_data) + "\0"
+            sock.sendall(packet_data)
+        finally:
+            sock.close()
+
+
+def shutdown():
+    """
+    Responsible for simply closing the TCP SocketServer, and joining the Queue to finish any
+    unfinished tasks before exiting.
+    """
+    print "Riggerlib is shutting down...."
+    global _global_queue
+    global _background_queue
+    _server.shutdown()
+    _global_queue.join()
+    _global_queue = None
+    _background_queue.join()
+    _background_queue = None
+
+
+atexit.register(shutdown)
