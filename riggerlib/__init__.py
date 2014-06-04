@@ -614,11 +614,14 @@ class RiggerClient(object):
             kwargs: The kwargs to pass to the hooks.
         """
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((self.address, self.port))
+
         try:
+            sock.connect((self.address, self.port))
             raw_data = {'hook_name': hook_name, 'data': kwargs}
             packet_data = json.dumps(raw_data) + "\0"
             sock.sendall(packet_data)
+        except socket.error:
+            pass
         finally:
             sock.close()
 
@@ -631,7 +634,8 @@ def shutdown():
     print "Riggerlib is shutting down...."
     global _global_queue
     global _background_queue
-    _server.shutdown()
+    if _server:
+        _server.shutdown()
     _global_queue.join()
     _global_queue = None
     _background_queue.join()
