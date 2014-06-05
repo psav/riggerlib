@@ -97,6 +97,49 @@ the local namespace with the key. So the process of events would follow like so.
 
 See how the prehook sets up a key value which is the made available to all the other plugin hooks.
 
+TCP Server
+----------
+
+Rigger comes with a TCP server which can be started up to allow either non-Python or remote machines
+to still communicate with the Rigger process. Rigger has a client that can be imported to use within
+Python projects, called RiggerClient. An instance of the RiggerClient is initialised with a server
+address and port like so::
+
+    from riggerlib import RiggerClient
+
+    rig_client = RiggerClient('127.0.0.1', 21212)
+
+Events can then be fired off in exactly the same way as before with the fire_hook method, which
+emulates the same API as the in-object Rigger instance. Internally the data is converted to JSON
+before being piped across the TCP connection. In this way data sent over the TCP link must be JSON
+serializable. The format is as follows::
+
+    {'hook_name': 'start_session',
+     'data':
+        {'arg1': 'value1',
+         'arg2': 'value2'
+        }
+    }
+
+Queues and Backgrounding Instances
+----------------------------------
+
+Rigger has two queues that it uses to stack up hooks. In the first instance, all hooks are delivered
+into the ``_global_queue``. This queue is continually polled in a separate thread and once an item
+is discovered, it is processed. During processing, after the pre-hook callback,  if it is discovered
+that the plugin instance has the background flag set, then the hook is passed into the ``_background_queue``
+to be processed as and when in a separate thread. In this way tasks like archiving can be dealt with
+in the background without affecting the main thread.
+
+Threading
+---------
+
+There are three main threads running in Rigger. The main thread, which will be part of the main loop
+of the importing script, the background thread, and the global queue thread. During hook processing
+an option is available to thread and parallelise the instance hooks. Since Rigger doesn't guarantee
+the order of plugin instances processing anyway, this is not an issue. If order is a concern, then
+please use a second event signal.
+
 Configuration
 -------------
 
@@ -104,6 +147,9 @@ Rigger takes few options to start, it, an example is shown below::
 
     squash_exceptions: True
     threaded: True
+    server_address: 127.0.0.1
+    server_port: 21212
+    server_enabled: True
     plugins:
         test:
             enabled: True
@@ -112,3 +158,7 @@ Rigger takes few options to start, it, an example is shown below::
 *  ``squash_exceptions`` option tells Rigger whether to ignore exceptions that happen inside
    the ``fire_hook()`` call and just log them, or if it should raise them.
 *  ``threaded`` option tells Rigger to run the fire_hook plugins as threads or sequentially.
+*  ``server_address`` option tells Rigger which ip to bind the TCP server to.
+*  ``server_port`` option tells Rigger which port to bind the TCP server to.
+*  ``server_enabled`` option tells Rigger if it should run up the TCP server.
+
