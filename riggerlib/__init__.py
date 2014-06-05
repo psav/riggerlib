@@ -631,7 +631,6 @@ def shutdown():
     Responsible for simply closing the TCP SocketServer, and joining the Queue to finish any
     unfinished tasks before exiting.
     """
-    print "Riggerlib is shutting down...."
     global _global_queue
     global _background_queue
     if _server:
