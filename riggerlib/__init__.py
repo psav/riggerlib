@@ -620,7 +620,7 @@ class RiggerClient(object):
             raw_data = {'hook_name': hook_name, 'data': kwargs}
             packet_data = json.dumps(raw_data) + "\0"
             sock.sendall(packet_data)
-        except socket.error:
+        except (socket.error, TypeError):
             pass
         finally:
             sock.close()
