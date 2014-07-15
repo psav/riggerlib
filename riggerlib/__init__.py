@@ -658,7 +658,7 @@ class RiggerClient(object):
 
     def __init__(self, address, port):
         self.address = address
-        self.port = port
+        self.port = int(port)
 
     def fire_hook(self, hook_name, grab_result=False, **kwargs):
         """
