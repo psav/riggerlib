@@ -2,7 +2,6 @@ from collections import defaultdict, Mapping
 from multiprocessing.pool import ThreadPool
 from funcsigs import signature
 from functools import wraps
-import atexit
 import hashlib
 import json
 import Queue
@@ -14,9 +13,26 @@ import time
 import yaml
 
 
+_task_list = {}
 _global_queue = Queue.Queue()
 _background_queue = Queue.Queue()
 _server = None
+
+
+class Task():
+    QUEUED = 0
+    RUNNING = 1
+    FINISHED = 2
+
+    def __init__(self, json_dict):
+        self.output = {}
+        self._tid = hashlib.sha1(str(time.time()) + json_dict['hook_name'])
+        self.json_dict = json_dict
+        self.status = self.QUEUED
+
+    @property
+    def tid(self):
+        return self._tid
 
 
 class _realempty():
@@ -33,8 +49,16 @@ class ThreadedRiggerHandler(SocketServer.BaseRequestHandler):
     A SocketServer Handler that waits for TCP connections and deals with them accordingly by
     placing them onto the _global_queue for processing.
     """
+
+    def all_tasks_complete(self, tids):
+        for tid in tids:
+            if _task_list[tid].status != Task.FINISHED:
+                return False
+        return True
+
     def handle(self):
         self.data = ""
+        tids = []
         while True:
             data_buffer = self.request.recv(1024)
             if data_buffer:
@@ -44,14 +68,32 @@ class ThreadedRiggerHandler(SocketServer.BaseRequestHandler):
                     for message in complete_messages[:-1]:
                         try:
                             json_dict = json.loads(message)
-                            _global_queue.put(json_dict)
+                            if json_dict['hook_name'] == 'terminate':
+                                self.request.sendall(json.dumps({'message': 'OK'}))
+                                self.request.recv(0)
+                                shutdown()
+                                return
+                            task = Task(json_dict)
+                            _task_list[task.tid] = task
+                            _global_queue.put(task.tid)
+                            tids.append(task.tid)
                         except ValueError:
                             pass
                     self.data = complete_messages[-1]
+                    break
             else:
                 break
-        response = "OK"
-        self.request.sendall(response)
+        while not self.all_tasks_complete(tids):
+            time.sleep(0.1)
+        for tid in tids:
+            output = _task_list[tid].output
+            jout = json.dumps(output)
+        response = jout
+        if json_dict['grab_result']:
+            self.request.sendall(response)
+        else:
+            self.request.sendall(json.dumps({'message': 'OK'}))
+        self.request.recv(0)
 
 
 class Rigger(object):
@@ -90,12 +132,19 @@ class Rigger(object):
         while True:
             if _global_queue:
                 if not _global_queue.empty():
-                    obj = _global_queue.get()
+                    tid = _global_queue.get()
+                    obj = _task_list[tid].json_dict
+                    _task_list[tid].status = Task.RUNNING
                     try:
-                        self.process_hook(obj['hook_name'], **obj['data'])
+                        loc, glo = self.process_hook(obj['hook_name'], **obj['data'])
+                        combined_dict = {}
+                        combined_dict.update(glo)
+                        combined_dict.update(loc)
+                        _task_list[tid].output = combined_dict
                     except Exception as e:
                         self.log_message(e)
                     _global_queue.task_done()
+                    _task_list[tid].status = Task.FINISHED
             else:
                 break
             time.sleep(0.1)
@@ -200,7 +249,7 @@ class Rigger(object):
             ip, port = _server.server_address
 
             server_thread = threading.Thread(target=_server.serve_forever)
-            server_thread.daemon = True
+            server_thread.daemon = False
             server_thread.start()
 
     def fire_hook(self, hook_name, **kwargs):
@@ -214,7 +263,12 @@ class Rigger(object):
             kwargs: The kwargs to pass to the hooks.
 
         """
-        _global_queue.put({'hook_name': hook_name, 'data': kwargs})
+        json_dict = {'hook_name': hook_name, 'data': kwargs}
+        task = Task(json_dict)
+        _task_list[task.tid] = task
+        _global_queue.put(task.tid)
+        while _task_list[task.tid].status is not Task.FINISHED:
+            time.sleep(0.1)
 
     def process_hook(self, hook_name, **kwargs):
         """
@@ -239,6 +293,7 @@ class Rigger(object):
             hook_name: The name of the hook to fire.
             kwargs: The kwargs to pass to the hooks.
         """
+
         if not self.initialized:
             return
         kwargs_updates = {}
@@ -281,6 +336,7 @@ class Rigger(object):
                 self.post_callbacks[hook_name].values(), kwargs)
         with self.gdl:
             self.update(self.global_data, globals_updates)
+        return kwargs, self.global_data
 
     def process_callbacks(self, callback_collection, kwargs):
         """
@@ -604,7 +660,7 @@ class RiggerClient(object):
         self.address = address
         self.port = port
 
-    def fire_hook(self, hook_name, **kwargs):
+    def fire_hook(self, hook_name, grab_result=False, **kwargs):
         """
         This function acts identically to the in-object function, it just serializes the data
         and passes it over TCP.
@@ -614,16 +670,31 @@ class RiggerClient(object):
             kwargs: The kwargs to pass to the hooks.
         """
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
+        data = {}
         try:
             sock.connect((self.address, self.port))
-            raw_data = {'hook_name': hook_name, 'data': kwargs}
+            raw_data = {'hook_name': hook_name, 'grab_result': grab_result, 'data': kwargs}
             packet_data = json.dumps(raw_data) + "\0"
             sock.sendall(packet_data)
-        except (socket.error, TypeError):
+            data = ""
+            if grab_result:
+                while True:
+                    data_buffer = self.request.recv(1024)
+                    if data_buffer:
+                        data += data_buffer
+                        if "\0" in data_buffer:
+                            break
+        except socket.error:
+            pass
+        except TypeError:
+            print "Could not JSONize data for hook {}".format(hook_name)
             pass
         finally:
             sock.close()
+            if data:
+                return json.loads(data)
+            else:
+                return None
 
 
 def shutdown():
@@ -631,14 +702,14 @@ def shutdown():
     Responsible for simply closing the TCP SocketServer, and joining the Queue to finish any
     unfinished tasks before exiting.
     """
+
     global _global_queue
     global _background_queue
     if _server:
         _server.shutdown()
-    _global_queue.join()
-    _global_queue = None
-    _background_queue.join()
-    _background_queue = None
-
-
-atexit.register(shutdown)
+    if _global_queue:
+        _global_queue.join()
+        _global_queue = None
+    if _background_queue:
+        _background_queue.join()
+        _background_queue = None
