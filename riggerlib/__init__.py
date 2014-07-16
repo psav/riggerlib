@@ -69,8 +69,8 @@ class ThreadedRiggerHandler(SocketServer.BaseRequestHandler):
                         try:
                             json_dict = json.loads(message)
                             if json_dict['hook_name'] == 'terminate':
-                                self.request.sendall(json.dumps({'message': 'OK'}))
-                                self.request.recv(0)
+                                self.request.sendall(json.dumps({'message': 'OK'}) + "\0")
+                                self.request.close()
                                 shutdown()
                                 return
                             task = Task(json_dict)
@@ -90,10 +90,10 @@ class ThreadedRiggerHandler(SocketServer.BaseRequestHandler):
             jout = json.dumps(output)
         response = jout
         if json_dict['grab_result']:
-            self.request.sendall(response)
+            self.request.sendall(response + "\0")
         else:
-            self.request.sendall(json.dumps({'message': 'OK'}))
-        self.request.recv(0)
+            self.request.sendall(json.dumps({'message': 'OK'}) + "\0")
+        self.request.close()
 
 
 class Rigger(object):
@@ -679,11 +679,12 @@ class RiggerClient(object):
             data = ""
             if grab_result:
                 while True:
-                    data_buffer = self.request.recv(1024)
+                    data_buffer = sock.recv(1024)
                     if data_buffer:
                         data += data_buffer
                         if "\0" in data_buffer:
                             break
+                data = data[:-1]
         except socket.error:
             pass
         except TypeError:
