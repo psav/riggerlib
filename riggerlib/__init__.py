@@ -50,44 +50,34 @@ class ThreadedRiggerHandler(SocketServer.BaseRequestHandler):
     placing them onto the _global_queue for processing.
     """
 
-    def all_tasks_complete(self, tids):
-        for tid in tids:
-            if _task_list[tid].status != Task.FINISHED:
-                return False
-        return True
-
     def handle(self):
         self.data = ""
-        tids = []
         while True:
             data_buffer = self.request.recv(1024)
             if data_buffer:
                 self.data += data_buffer
                 if "\0" in data_buffer:
-                    complete_messages = self.data.split("\0")
-                    for message in complete_messages[:-1]:
-                        try:
-                            json_dict = json.loads(message)
-                            if json_dict['hook_name'] == 'terminate':
-                                self.request.sendall(json.dumps({'message': 'OK'}) + "\0")
-                                self.request.close()
-                                shutdown()
-                                return
-                            task = Task(json_dict)
-                            _task_list[task.tid] = task
-                            _global_queue.put(task.tid)
-                            tids.append(task.tid)
-                        except ValueError:
-                            pass
-                    self.data = complete_messages[-1]
+                    try:
+                        self.data = self.data[:-1]
+                        json_dict = json.loads(self.data)
+                        if json_dict['hook_name'] == 'terminate':
+                            self.request.sendall(json.dumps({'message': 'OK'}) + "\0")
+                            self.request.close()
+                            shutdown()
+                            return
+                        task = Task(json_dict)
+                        _task_list[task.tid] = task
+                        _global_queue.put(task.tid)
+                        self.tid = task.tid
+                    except ValueError:
+                        pass
                     break
             else:
                 break
-        while not self.all_tasks_complete(tids):
+        while _task_list[self.tid].status != Task.FINISHED:
             time.sleep(0.1)
-        for tid in tids:
-            output = _task_list[tid].output
-            jout = json.dumps(output)
+        output = _task_list[self.tid].output
+        jout = json.dumps(output)
         response = jout
         if json_dict['grab_result']:
             self.request.sendall(response + "\0")
@@ -670,21 +660,21 @@ class RiggerClient(object):
             kwargs: The kwargs to pass to the hooks.
         """
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        data = {}
+        recv_data = ""
         try:
             sock.connect((self.address, self.port))
             raw_data = {'hook_name': hook_name, 'grab_result': grab_result, 'data': kwargs}
             packet_data = json.dumps(raw_data) + "\0"
             sock.sendall(packet_data)
-            data = ""
+            recv_data = ""
             if grab_result:
                 while True:
                     data_buffer = sock.recv(1024)
                     if data_buffer:
-                        data += data_buffer
+                        recv_data += data_buffer
                         if "\0" in data_buffer:
                             break
-                data = data[:-1]
+                recv_data = recv_data[:-1]
         except socket.error:
             pass
         except TypeError:
@@ -692,8 +682,8 @@ class RiggerClient(object):
             pass
         finally:
             sock.close()
-            if data:
-                return json.loads(data)
+            if recv_data:
+                return json.loads(recv_data)
             else:
                 return None
 
