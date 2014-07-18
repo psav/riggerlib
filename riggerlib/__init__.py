@@ -2,14 +2,17 @@ from collections import defaultdict, Mapping
 from multiprocessing.pool import ThreadPool
 from funcsigs import signature
 from functools import wraps
+from bottle import run, request, route, ServerAdapter
 import hashlib
 import json
 import Queue
-import socket
-import SocketServer
+import requests
+import random
+import string
 import sys
 import threading
 import time
+from waitress.server import create_server
 import yaml
 
 
@@ -19,6 +22,28 @@ _background_queue = Queue.Queue()
 _server = None
 
 
+def generate_random_string(size=8):
+    size = int(size)
+
+    def random_string_generator(size):
+        choice_chars = string.letters + string.digits
+        for x in xrange(size):
+            yield random.choice(choice_chars)
+    return ''.join(random_string_generator(size))
+
+
+class RatBag(ServerAdapter):
+    server = None
+
+    def serve(self, app, **kw):
+        _myserver = kw.pop('_server', create_server)
+        self.myserver = _myserver(app, **kw)
+        self.myserver.run()
+
+    def run(self, handler):
+        self.serve(handler, host=self.host, port=self.port, threads=10)
+
+
 class Task():
     QUEUED = 0
     RUNNING = 1
@@ -26,7 +51,8 @@ class Task():
 
     def __init__(self, json_dict):
         self.output = {}
-        self._tid = hashlib.sha1(str(time.time()) + json_dict['hook_name'])
+        self._tid = hashlib.sha1(str(time.time()) + json_dict['hook_name'] +
+                                 generate_random_string())
         self.json_dict = json_dict
         self.status = self.QUEUED
 
@@ -35,55 +61,39 @@ class Task():
         return self._tid
 
 
+@route('/terminate/')
+def terminate():
+    shutdown()
+
+
+@route('/fire_hook/', method='POST')
+def fire_hook():
+    json_dict = request.json
+    if json_dict['hook_name'] == "terminate":
+        shutdown()
+        return({})
+    task = Task(json_dict)
+    tid = task.tid.hexdigest()
+    _task_list[tid] = task
+    if _global_queue:
+        _global_queue.put(tid)
+        resp = {"message": "OK", "tid": tid}
+    else:
+        resp = {"message": "NOT OK"}
+    return(resp)
+
+
+@route('/task_check/', method='POST')
+def task_check():
+    json_dict = request.json
+    tid = json_dict['tid']
+    resp = {"tid": tid, "status": _task_list[tid].status, "output": _task_list[tid].output}
+    return resp
+
+
 class _realempty():
     """ A dummy class to be able to differentiate between None and "Really None". """
     pass
-
-
-class ThreadedTCPServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
-    pass
-
-
-class ThreadedRiggerHandler(SocketServer.BaseRequestHandler):
-    """
-    A SocketServer Handler that waits for TCP connections and deals with them accordingly by
-    placing them onto the _global_queue for processing.
-    """
-
-    def handle(self):
-        self.data = ""
-        while True:
-            data_buffer = self.request.recv(1024)
-            if data_buffer:
-                self.data += data_buffer
-                if "\0" in data_buffer:
-                    try:
-                        self.data = self.data[:-1]
-                        json_dict = json.loads(self.data)
-                        if json_dict['hook_name'] == 'terminate':
-                            self.request.sendall(json.dumps({'message': 'OK'}) + "\0")
-                            self.request.close()
-                            shutdown()
-                            return
-                        task = Task(json_dict)
-                        _task_list[task.tid] = task
-                        _global_queue.put(task.tid)
-                        self.tid = task.tid
-                    except ValueError:
-                        pass
-                    break
-            else:
-                break
-        while _task_list[self.tid].status != Task.FINISHED:
-            time.sleep(0.1)
-        output = _task_list[self.tid].output
-        jout = json.dumps(output)
-        response = jout
-        if json_dict['grab_result']:
-            self.request.sendall(response + "\0")
-        else:
-            self.request.sendall(json.dumps({'message': 'OK'}) + "\0")
-        self.request.close()
 
 
 class Rigger(object):
@@ -106,10 +116,10 @@ class Rigger(object):
         self.initialized = False
         self._server = None
         self._t = threading.Thread(target=self.process_queue)
-        self._t.daemon = True
+        self._t.daemon = False
         self._t.start()
         self._bt = threading.Thread(target=self.process_background_queue)
-        self._bt.daemon = True
+        self._bt.daemon = False
         self._bt.start()
 
     def process_queue(self):
@@ -121,7 +131,7 @@ class Rigger(object):
         """
         while True:
             if _global_queue:
-                if not _global_queue.empty():
+                while not _global_queue.empty():
                     tid = _global_queue.get()
                     obj = _task_list[tid].json_dict
                     _task_list[tid].status = Task.RUNNING
@@ -149,7 +159,7 @@ class Rigger(object):
         """
         while True:
             if _background_queue:
-                if not _background_queue.empty():
+                while not _background_queue.empty():
                     obj = _background_queue.get()
                     try:
                         local, globals_updates = self.process_callbacks(obj['cb'], obj['kwargs'])
@@ -234,12 +244,14 @@ class Rigger(object):
         self._server_port = self.config.get('server_port', 21212)
         self._server_enable = self.config.get('server_enabled', False)
         if self._server_enable:
-            _server = ThreadedTCPServer((self._server_hostname, self._server_port),
-                                        ThreadedRiggerHandler)
-            ip, port = _server.server_address
-
-            server_thread = threading.Thread(target=_server.serve_forever)
-            server_thread.daemon = False
+            _server = RatBag(host=self._server_hostname,
+                             port=self._server_port)
+            server_thread = threading.Thread(target=run,
+                                             kwargs=dict(server=_server, quiet=True))
+            # Good for debugging
+            # server_thread = threading.Thread(target=run, kwargs=dict(host=self._server_hostname,
+            #                                                         port=self._server_port))
+            server_thread.daemon = True
             server_thread.start()
 
     def fire_hook(self, hook_name, **kwargs):
@@ -283,7 +295,6 @@ class Rigger(object):
             hook_name: The name of the hook to fire.
             kwargs: The kwargs to pass to the hooks.
         """
-
         if not self.initialized:
             return
         kwargs_updates = {}
@@ -651,41 +662,34 @@ class RiggerClient(object):
         self.port = int(port)
 
     def fire_hook(self, hook_name, grab_result=False, **kwargs):
-        """
-        This function acts identically to the in-object function, it just serializes the data
-        and passes it over TCP.
-
-        Args:
-            hook_name: The name of the hook to fire.
-            kwargs: The kwargs to pass to the hooks.
-        """
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        recv_data = ""
+        raw_data = {'hook_name': hook_name, 'grab_result': grab_result, 'data': kwargs}
+        headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
         try:
-            sock.connect((self.address, self.port))
-            raw_data = {'hook_name': hook_name, 'grab_result': grab_result, 'data': kwargs}
-            packet_data = json.dumps(raw_data) + "\0"
-            sock.sendall(packet_data)
-            recv_data = ""
+            r = requests.post("http://{}:{}/fire_hook/".format(self.address, self.port),
+                              data=json.dumps(raw_data), headers=headers)
+            resp = r.json()
             if grab_result:
-                while True:
-                    data_buffer = sock.recv(1024)
-                    if data_buffer:
-                        recv_data += data_buffer
-                        if "\0" in data_buffer:
-                            break
-                recv_data = recv_data[:-1]
-        except socket.error:
-            pass
-        except TypeError:
-            print "Could not JSONize data for hook {}".format(hook_name)
-            pass
-        finally:
-            sock.close()
-            if recv_data:
-                return json.loads(recv_data)
+                status = 0
+                while status != Task.FINISHED:
+                    time.sleep(0.1)
+                    task = self.task_status(resp['tid'])
+                    status = task["status"]
+                return task["output"]
             else:
                 return None
+        except requests.exceptions.ConnectionError:
+            return None
+
+    def task_status(self, tid):
+        raw_data = {'tid': tid}
+        headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+        try:
+            r = requests.post("http://{}:{}/task_check/".format(self.address, self.port),
+                              data=json.dumps(raw_data), headers=headers)
+            resp = r.json()
+            return resp
+        except requests.exceptions.ConnectionError:
+            return None
 
 
 def shutdown():
@@ -696,8 +700,6 @@ def shutdown():
 
     global _global_queue
     global _background_queue
-    if _server:
-        _server.shutdown()
     if _global_queue:
         _global_queue.join()
         _global_queue = None
