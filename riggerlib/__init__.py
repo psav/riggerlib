@@ -19,6 +19,8 @@ import yaml
 _task_list = {}
 _global_queue = Queue.Queue()
 _background_queue = Queue.Queue()
+_global_queue_shutdown = False
+_background_queue_shutdown = False
 _server = None
 
 
@@ -130,7 +132,7 @@ class Rigger(object):
         processing, the exception is printed and execution continues.
         """
         while True:
-            if _global_queue:
+            if not _global_queue_shutdown:
                 while not _global_queue.empty():
                     tid = _global_queue.get()
                     obj = _task_list[tid].json_dict
@@ -158,7 +160,7 @@ class Rigger(object):
         to complete.
         """
         while True:
-            if _background_queue:
+            if not _background_queue_shutdown:
                 while not _background_queue.empty():
                     obj = _background_queue.get()
                     try:
@@ -700,9 +702,11 @@ def shutdown():
 
     global _global_queue
     global _background_queue
+    global _global_queue_shutdown
+    global _background_queue_shutdown
     if _global_queue:
         _global_queue.join()
-        _global_queue = None
+        _global_queue_shutdown = True
     if _background_queue:
         _background_queue.join()
-        _background_queue = None
+        _background_queue_shutdown = True
