@@ -323,6 +323,8 @@ class Rigger(object):
                 cb = callbacks[hook_name]
                 if instance.data.get('background', False):
                     _background_queue.put({'cb': [cb], 'kwargs': kwargs})
+                elif cb['bg']:
+                    _background_queue.put({'cb': [cb], 'kwargs': kwargs})
                 else:
                     event_hooks.append(cb)
         kwargs_updates, globals_updates = self.process_callbacks(event_hooks, kwargs)
@@ -564,7 +566,7 @@ class Rigger(object):
             print "Instance: [{}] does not exist, is your configuration correct?".format(name)
 
     @staticmethod
-    def create_callback(callback):
+    def create_callback(callback, bg=False):
         """
         Simple function to inspect a function and return it along with it param names wrapped
         up in a nice dict. This forms a callback object.
@@ -576,7 +578,8 @@ class Rigger(object):
         params = signature(callback).parameters
         return {
             'func': callback,
-            'args': params
+            'args': params,
+            'bg': bg
         }
 
     def update(self, orig_dict, updates):
@@ -636,7 +639,7 @@ class RiggerBasePlugin(object):
         inner.__wrapped__ = func
         return inner
 
-    def register_plugin_hook(self, event, callback):
+    def register_plugin_hook(self, event, callback, bg=False):
         """
         Registers a plugins callback with the associated event. Each event can only have one
         plugin callback.
