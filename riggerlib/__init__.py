@@ -682,7 +682,10 @@ class RiggerClient(object):
                 return task["output"]
             else:
                 return None
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError):
+            return None
+        except Exception as e:
+            print e
             return None
 
     def task_status(self, tid):
@@ -693,7 +696,10 @@ class RiggerClient(object):
                               data=json.dumps(raw_data), headers=headers)
             resp = r.json()
             return resp
-        except requests.exceptions.ConnectionError:
+        except (requests.exceptions.ConnectionError):
+            return None
+        except Exception as e:
+            print e
             return None
 
 
