@@ -684,8 +684,7 @@ class RiggerClient(object):
                 return None
         except (requests.exceptions.ConnectionError):
             return None
-        except Exception as e:
-            print e
+        except Exception:
             return None
 
     def task_status(self, tid):
@@ -698,8 +697,7 @@ class RiggerClient(object):
             return resp
         except (requests.exceptions.ConnectionError):
             return None
-        except Exception as e:
-            print e
+        except Exception:
             return None
 
 
