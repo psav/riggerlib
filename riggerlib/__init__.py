@@ -665,13 +665,14 @@ class RiggerClient(object):
     def __init__(self, address, port):
         self.address = address
         self.port = int(port)
+        self._session = requests.Session()
 
     def fire_hook(self, hook_name, grab_result=False, **kwargs):
         raw_data = {'hook_name': hook_name, 'grab_result': grab_result, 'data': kwargs}
         headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
         try:
-            r = requests.post("http://{}:{}/fire_hook/".format(self.address, self.port),
-                              data=json.dumps(raw_data), headers=headers)
+            r = self._session.post("http://{}:{}/fire_hook/".format(self.address, self.port),
+                data=json.dumps(raw_data), headers=headers)
             resp = r.json()
             if grab_result:
                 status = 0
@@ -691,8 +692,8 @@ class RiggerClient(object):
         raw_data = {'tid': tid}
         headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
         try:
-            r = requests.post("http://{}:{}/task_check/".format(self.address, self.port),
-                              data=json.dumps(raw_data), headers=headers)
+            r = self._session.post("http://{}:{}/task_check/".format(self.address, self.port),
+                data=json.dumps(raw_data), headers=headers)
             resp = r.json()
             return resp
         except (requests.exceptions.ConnectionError):
