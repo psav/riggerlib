@@ -1,10 +1,7 @@
-from collections import defaultdict, Mapping
-from multiprocessing.pool import ThreadPool
-from funcsigs import signature
-from functools import wraps
-from bottle import run, request, route, ServerAdapter
+import atexit
 import hashlib
 import json
+import multiprocessing
 import Queue
 import requests
 import random
@@ -12,11 +9,16 @@ import string
 import sys
 import threading
 import time
-from waitress.server import create_server
-import yaml
+from collections import defaultdict, Mapping
+from functools import partial, wraps
+from multiprocessing.pool import ThreadPool
 
+import yaml
+import zmq
+from funcsigs import signature
 
 _task_list = {}
+_queue_lock = threading.Lock()
 _global_queue = Queue.Queue()
 _background_queue = Queue.Queue()
 _global_queue_shutdown = False
@@ -34,18 +36,6 @@ def generate_random_string(size=8):
     return ''.join(random_string_generator(size))
 
 
-class RatBag(ServerAdapter):
-    server = None
-
-    def serve(self, app, **kw):
-        _myserver = kw.pop('_server', create_server)
-        self.myserver = _myserver(app, **kw)
-        self.myserver.run()
-
-    def run(self, handler):
-        self.serve(handler, host=self.host, port=self.port, threads=10)
-
-
 class Task():
     QUEUED = 0
     RUNNING = 1
@@ -61,36 +51,6 @@ class Task():
     @property
     def tid(self):
         return self._tid
-
-
-@route('/terminate/')
-def terminate():
-    shutdown()
-
-
-@route('/fire_hook/', method='POST')
-def fire_hook():
-    json_dict = request.json
-    if json_dict['hook_name'] == "terminate":
-        shutdown()
-        return({})
-    task = Task(json_dict)
-    tid = task.tid.hexdigest()
-    _task_list[tid] = task
-    if _global_queue:
-        _global_queue.put(tid)
-        resp = {"message": "OK", "tid": tid}
-    else:
-        resp = {"message": "NOT OK"}
-    return(resp)
-
-
-@route('/task_check/', method='POST')
-def task_check():
-    json_dict = request.json
-    tid = json_dict['tid']
-    resp = {"tid": tid, "status": _task_list[tid].status, "output": _task_list[tid].output}
-    return resp
 
 
 class _realempty():
@@ -116,7 +76,6 @@ class Rigger(object):
         self.config_file = config_file
         self.squash_exceptions = False
         self.initialized = False
-        self._server = None
         self._t = threading.Thread(target=self.process_queue)
         self._t.daemon = False
         self._t.start()
@@ -134,9 +93,10 @@ class Rigger(object):
         while True:
             if not _global_queue_shutdown:
                 while not _global_queue.empty():
-                    tid = _global_queue.get()
-                    obj = _task_list[tid].json_dict
-                    _task_list[tid].status = Task.RUNNING
+                    with _queue_lock:
+                        tid = _global_queue.get()
+                        obj = _task_list[tid].json_dict
+                        _task_list[tid].status = Task.RUNNING
                     try:
                         loc, glo = self.process_hook(obj['hook_name'], **obj['data'])
                         combined_dict = {}
@@ -145,8 +105,9 @@ class Rigger(object):
                         _task_list[tid].output = combined_dict
                     except Exception as e:
                         self.log_message(e)
-                    _global_queue.task_done()
-                    _task_list[tid].status = Task.FINISHED
+                    with _queue_lock:
+                        _global_queue.task_done()
+                        _task_list[tid].status = Task.FINISHED
             else:
                 break
             time.sleep(0.1)
@@ -173,6 +134,59 @@ class Rigger(object):
             else:
                 break
             time.sleep(0.1)
+
+    def zmq_event_handler(self, zmq_socket_address):
+        """
+        The ``zmq_event_handler`` thread receives (and responds to) updates from the
+        zmq socket, which is normally embedded in the web server running alongside this
+        riggerlib instance, in its own process.
+
+        """
+        ctx = zmq.Context()
+        zmq_socket = ctx.socket(zmq.REP)
+        zmq_socket.bind(zmq_socket_address)
+
+        def zmq_reply(message, **extra):
+            payload = {'message': message}
+            payload.update(extra)
+            zmq_socket.send_json(payload)
+        bad_request = partial(zmq_reply, 'BAD REQUEST')
+
+        while True:
+            json_dict = zmq_socket.recv_json()
+            try:
+                event_name = json_dict['event_name']
+            except KeyError:
+                bad_request()
+
+            if event_name == 'fire_hook':
+                task = Task(json_dict)
+                tid = task.tid.hexdigest()
+                _task_list[tid] = task
+                if _global_queue:
+                    with _queue_lock:
+                        _global_queue.put(tid)
+                    zmq_reply('OK', tid=tid)
+                else:
+                    bad_request()
+            elif event_name == 'task_check':
+                try:
+                    tid = json_dict['tid']
+                    extra = {
+                        "tid": tid,
+                        "status": _task_list[tid].status,
+                        "output": _task_list[tid].output
+                    }
+                    zmq_reply('OK', **extra)
+                except KeyError:
+                    zmq_reply('NOT FOUND')
+            elif event_name == 'shutdown':
+                zmq_socket.close()
+                shutdown()
+            elif event_name == 'ping':
+                zmq_reply('PONG')
+            else:
+                bad_request()
 
     def read_config(self, config_file):
         """
@@ -246,15 +260,27 @@ class Rigger(object):
         self._server_port = self.config.get('server_port', 21212)
         self._server_enable = self.config.get('server_enabled', False)
         if self._server_enable:
-            _server = RatBag(host=self._server_hostname,
-                             port=self._server_port)
-            server_thread = threading.Thread(target=run,
-                                             kwargs=dict(server=_server, quiet=True))
-            # Good for debugging
-            # server_thread = threading.Thread(target=run, kwargs=dict(host=self._server_hostname,
-            #                                                         port=self._server_port))
-            server_thread.daemon = True
-            server_thread.start()
+            from riggerlib.wsgi import server_runner
+            zmq_socket_address = self.config.get('zmq_socket_address',
+                'tcp://{}:{}'.format(self._server_hostname, self._server_port + 1))
+
+            # set up reciever thread for zmq event handling
+            zeh = threading.Thread(target=self.zmq_event_handler, args=(zmq_socket_address,))
+            zeh.daemon = True
+            zeh.start()
+
+            # start the web server
+            server_options = {
+                'bind': '{}:{}'.format(self._server_hostname, self._server_port),
+                'loglevel': 'error',
+                'proc_name': 'riggerlib-wsgi-worker',
+                'workers': 4
+            }
+            _server = multiprocessing.Process(target=server_runner,
+                args=(zmq_socket_address, server_options),
+                name='riggerlib-wsgi')
+            _server.start()
+            atexit.register(shutdown)
 
     def fire_hook(self, hook_name, **kwargs):
         """
@@ -269,8 +295,9 @@ class Rigger(object):
         """
         json_dict = {'hook_name': hook_name, 'data': kwargs}
         task = Task(json_dict)
-        _task_list[task.tid] = task
-        _global_queue.put(task.tid)
+        with _queue_lock:
+            _task_list[task.tid] = task
+            _global_queue.put(task.tid)
         while _task_list[task.tid].status is not Task.FINISHED:
             time.sleep(0.1)
 
@@ -303,18 +330,18 @@ class Rigger(object):
         globals_updates = {}
         kwargs.update({'config': self.config})
 
-        #First fire off any pre-hook callbacks
+        # First fire off any pre-hook callbacks
         if self.pre_callbacks.get(hook_name):
-            #print "Running pre hook callback for {}".format(hook_name)
+            # print "Running pre hook callback for {}".format(hook_name)
             kwargs_updates, globals_updates = self.process_callbacks(
                 self.pre_callbacks[hook_name].values(), kwargs)
 
-        #Now we can update the kwargs passed to the real hook with the updates
+        # Now we can update the kwargs passed to the real hook with the updates
         with self.gdl:
             self.update(self.global_data, globals_updates)
         self.update(kwargs, kwargs_updates)
 
-        #Now fire off each plugin hook
+        # Now fire off each plugin hook
         event_hooks = []
         for instance_name, instance in self.instances.iteritems():
             callbacks = instance.obj.callbacks
@@ -329,14 +356,14 @@ class Rigger(object):
                     event_hooks.append(cb)
         kwargs_updates, globals_updates = self.process_callbacks(event_hooks, kwargs)
 
-        #One more update for hte post_hook callback
+        # One more update for hte post_hook callback
         with self.gdl:
             self.update(self.global_data, globals_updates)
         self.update(kwargs, kwargs_updates)
 
-        #Finally any post-hook callbacks
+        # Finally any post-hook callbacks
         if self.post_callbacks.get(hook_name):
-            #print "Running post hook callback for {}".format(hook_name)
+            # print "Running post hook callback for {}".format(hook_name)
             kwargs_updates, globals_updates = self.process_callbacks(
                 self.post_callbacks[hook_name].values(), kwargs)
         with self.gdl:
@@ -521,7 +548,7 @@ class Rigger(object):
         elif plugin_name is None:
             print "Plugin name cannot be None"
         else:
-            #print "Registering plugin {}".format(plugin_name)
+            # print "Registering plugin {}".format(plugin_name)
             self.plugins[plugin_name] = cls
 
     def get_instance_obj(self, name):
@@ -707,14 +734,16 @@ def shutdown():
     Responsible for simply closing the TCP SocketServer, and joining the Queue to finish any
     unfinished tasks before exiting.
     """
-
+    if _server:
+        _server.terminate()
     global _global_queue
     global _background_queue
     global _global_queue_shutdown
     global _background_queue_shutdown
-    if _global_queue:
+    if _global_queue and not _global_queue_shutdown:
         _global_queue.join()
         _global_queue_shutdown = True
-    if _background_queue:
+    if _background_queue and not _background_queue_shutdown:
         _background_queue.join()
         _background_queue_shutdown = True
+    raise SystemExit
