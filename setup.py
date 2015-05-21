@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="riggerlib",
-    version='1.1.13',
+    version='1.1.14.dev2',
     description="An event hook framework",
     author="Pete Savage",
     keywords=["event", "linux", "hook"],
@@ -13,7 +13,7 @@ setup(
         "Operating System :: POSIX :: Linux",
         "License :: OSI Approved :: Python Software Foundation License"],
     packages=['riggerlib'],
-    install_requires=['funcsigs', 'bottle', 'waitress'],
+    install_requires=['funcsigs', 'flask', 'gunicorn', 'pyzmq'],
     include_package_data=True,
     url="https://github.com/psav/riggerlib",
 )
