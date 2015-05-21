@@ -100,7 +100,7 @@ See how the prehook sets up a key value which is the made available to all the o
 TCP Server
 ----------
 
-Rigger comes with a TCP server which can be started up to allow either non-Python or remote machines
+Rigger can use a TCP server which can be started up to allow either non-Python or remote machines
 to still communicate with the Rigger process. Rigger has a client that can be imported to use within
 Python projects, called RiggerClient. An instance of the RiggerClient is initialised with a server
 address and port like so::
@@ -120,6 +120,11 @@ serializable. The format is as follows::
          'arg2': 'value2'
         }
     }
+
+Terminating
+-----------
+
+To terminate the rigger server, use the ``terminate`` method of the RiggerClient.
 
 Queues and Backgrounding Instances
 ----------------------------------
