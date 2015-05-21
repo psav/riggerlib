@@ -20,7 +20,7 @@ def setup_zmq_socket():
     zmq_communicate('ping')
 
 
-@application.route('/terminate/')
+@application.route('/terminate/', methods=['GET', 'POST'])
 def terminate():
     zmq_communicate('shutdown')
     flask.abort('503')
