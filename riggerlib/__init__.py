@@ -728,6 +728,18 @@ class RiggerClient(object):
         except Exception:
             return None
 
+    def terminate(self):
+        headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+        try:
+            r = self._session.post("http://{}:{}/terminate/".format(self.address, self.port),
+                                   data={}, headers=headers)
+            resp = r.json()
+            return resp
+        except (requests.exceptions.ConnectionError):
+            return None
+        except Exception:
+            return None
+
 
 def shutdown():
     """
