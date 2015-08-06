@@ -78,7 +78,7 @@ def zmq_communicate(event_name, **extra):
     # handle special cases immediately
     # otherwise return the complete
     if message == 'OK':
-        response = flask.jsonify(json_dict)
+        response = flask.jsonify(response)
     elif message == 'NOT FOUND':
         response = flask.abort(404)
     elif message == 'PONG':

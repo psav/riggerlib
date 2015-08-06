@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="riggerlib",
-    version='2.0.0',
+    version='2.0.1',
     description="An event hook framework",
     author="Pete Savage, Sean Myers",
     keywords=["event", "linux", "hook"],
