@@ -9,13 +9,15 @@ import string
 import sys
 import threading
 import time
-from collections import defaultdict, Mapping
+from collections import defaultdict
 from functools import partial, wraps
 from multiprocessing.pool import ThreadPool
 
 import yaml
 import zmq
 from funcsigs import signature
+
+from .tools import recursive_update
 
 _task_list = {}
 _queue_lock = threading.Lock()
@@ -127,7 +129,7 @@ class Rigger(object):
                     try:
                         local, globals_updates = self.process_callbacks(obj['cb'], obj['kwargs'])
                         with self.gdl:
-                            self.update(self.global_data, globals_updates)
+                            self.global_data = recursive_update(self.global_data, globals_updates)
                     except Exception as e:
                         self.log_message(e)
                     _background_queue.task_done()
@@ -338,8 +340,8 @@ class Rigger(object):
 
         # Now we can update the kwargs passed to the real hook with the updates
         with self.gdl:
-            self.update(self.global_data, globals_updates)
-        self.update(kwargs, kwargs_updates)
+            self.global_data = recursive_update(self.global_data, globals_updates)
+        kwargs = recursive_update(kwargs, kwargs_updates)
 
         # Now fire off each plugin hook
         event_hooks = []
@@ -358,8 +360,8 @@ class Rigger(object):
 
         # One more update for hte post_hook callback
         with self.gdl:
-            self.update(self.global_data, globals_updates)
-        self.update(kwargs, kwargs_updates)
+            self.global_data = recursive_update(self.global_data, globals_updates)
+        kwargs = recursive_update(kwargs, kwargs_updates)
 
         # Finally any post-hook callbacks
         if self.post_callbacks.get(hook_name):
@@ -367,7 +369,7 @@ class Rigger(object):
             kwargs_updates, globals_updates = self.process_callbacks(
                 self.post_callbacks[hook_name].values(), kwargs)
         with self.gdl:
-            self.update(self.global_data, globals_updates)
+            self.global_data = recursive_update(self.global_data, globals_updates)
         return kwargs, self.global_data
 
     def process_callbacks(self, callback_collection, kwargs):
@@ -464,9 +466,9 @@ class Rigger(object):
         """
         if result:
             if result[0]:
-                self.update(loc_collect, result[0])
+                loc_collect = recursive_update(loc_collect, result[0])
             if result[1]:
-                self.update(glo_collect, result[1])
+                glo_collect = recursive_update(glo_collect, result[1])
         return loc_collect, glo_collect
 
     def build_kwargs(self, args, kwargs):
@@ -608,23 +610,6 @@ class Rigger(object):
             'args': params,
             'bg': bg
         }
-
-    def update(self, orig_dict, updates):
-        """
-        Update dict objects with recursive merge.
-
-        Args:
-            orig_dict: The original dict.
-            updates: The updates to merge with the dictionary.
-        """
-        for key, val in updates.iteritems():
-            if isinstance(val, Mapping):
-                orig_dict[key] = self.update(orig_dict.get(key, {}), val)
-            elif isinstance(orig_dict, Mapping):
-                orig_dict[key] = updates[key]
-            else:
-                orig_dict = {key: updates[key]}
-        return orig_dict
 
     def handle_failure(self, exc):
         """

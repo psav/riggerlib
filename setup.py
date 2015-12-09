@@ -4,7 +4,7 @@ setup(
     name="riggerlib",
     version='2.0.2',
     description="An event hook framework",
-    author="Pete Savage, Sean Myers",
+    author="Pete Savage, Sean Myers, Milan Falesnik",
     keywords=["event", "linux", "hook"],
     license="MIT",
     classifiers=[
@@ -13,7 +13,7 @@ setup(
         "Operating System :: POSIX :: Linux",
         "License :: OSI Approved :: MIT License"],
     packages=['riggerlib'],
-    install_requires=['funcsigs', 'flask', 'gunicorn', 'pyzmq'],
+    install_requires=['funcsigs', 'flask', 'gunicorn', 'pyzmq', 'requests', 'pyyaml'],
     include_package_data=True,
     url="https://github.com/psav/riggerlib",
 )
