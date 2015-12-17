@@ -338,10 +338,10 @@ class Rigger(object):
             kwargs_updates, globals_updates = self.process_callbacks(
                 self.pre_callbacks[hook_name].values(), kwargs)
 
-        # Now we can update the kwargs passed to the real hook with the updates
-        with self.gdl:
-            self.global_data = recursive_update(self.global_data, globals_updates)
-        kwargs = recursive_update(kwargs, kwargs_updates)
+            # Now we can update the kwargs passed to the real hook with the updates
+            with self.gdl:
+                self.global_data = recursive_update(self.global_data, globals_updates)
+            kwargs = recursive_update(kwargs, kwargs_updates)
 
         # Now fire off each plugin hook
         event_hooks = []
@@ -358,7 +358,7 @@ class Rigger(object):
                     event_hooks.append(cb)
         kwargs_updates, globals_updates = self.process_callbacks(event_hooks, kwargs)
 
-        # One more update for hte post_hook callback
+        # One more update for the post_hook callback
         with self.gdl:
             self.global_data = recursive_update(self.global_data, globals_updates)
         kwargs = recursive_update(kwargs, kwargs_updates)
@@ -368,8 +368,9 @@ class Rigger(object):
             # print "Running post hook callback for {}".format(hook_name)
             kwargs_updates, globals_updates = self.process_callbacks(
                 self.post_callbacks[hook_name].values(), kwargs)
-        with self.gdl:
-            self.global_data = recursive_update(self.global_data, globals_updates)
+            with self.gdl:
+                self.global_data = recursive_update(self.global_data, globals_updates)
+            kwargs = recursive_update(kwargs, kwargs_updates)
         return kwargs, self.global_data
 
     def process_callbacks(self, callback_collection, kwargs):
