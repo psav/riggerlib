@@ -162,12 +162,8 @@ class Rigger(object):
                 bad_request()
 
             if event_name == 'fire_hook':
-                task = Task(json_dict)
-                tid = task.tid.hexdigest()
-                _task_list[tid] = task
-                if _global_queue:
-                    with _queue_lock:
-                        _global_queue.put(tid)
+                tid = self._fire_internal_hook(json_dict)
+                if tid:
                     zmq_reply('OK', tid=tid)
                 else:
                     bad_request()
@@ -246,7 +242,7 @@ class Rigger(object):
         if plugin_name in self.plugins:
             obj = self.plugins[plugin_name]
             if obj:
-                obj_instance = obj(ident, config)
+                obj_instance = obj(ident, config, self)
                 self.instances[ident] = RiggerPluginInstance(ident, obj_instance, config)
         else:
             msg = "Plugin [{}] was not found, "\
@@ -296,12 +292,18 @@ class Rigger(object):
 
         """
         json_dict = {'hook_name': hook_name, 'data': kwargs}
+        self._fire_internal_hook(json_dict)
+
+    def _fire_internal_hook(self, json_dict):
         task = Task(json_dict)
-        with _queue_lock:
-            _task_list[task.tid] = task
-            _global_queue.put(task.tid)
-        while _task_list[task.tid].status is not Task.FINISHED:
-            time.sleep(0.1)
+        tid = task.tid.hexdigest()
+        _task_list[tid] = task
+        if _global_queue:
+            with _queue_lock:
+                _global_queue.put(tid)
+            return tid
+        else:
+            return None
 
     def process_hook(self, hook_name, **kwargs):
         """
@@ -634,12 +636,13 @@ class RiggerPluginInstance(object):
 
 
 class RiggerBasePlugin(object):
-    def __init__(self, ident, data):
+    def __init__(self, ident, data, _rigger_instance):
         self.callbacks = {}
         self.ident = ident
         self.data = data
         self.plugin_initialize()
         self.configured = False
+        self._rigger_instance = _rigger_instance
 
     @staticmethod
     def check_configured(func):
@@ -662,6 +665,12 @@ class RiggerBasePlugin(object):
         hook_fire.
         """
         self.callbacks[event] = Rigger.create_callback(callback)
+
+    def fire_hook(self, hook_name, **kwargs):
+        if 'grab_result' in kwargs:
+            self._rigger_instance.log_message('ERROR: Cannot grab result of a nested hook')
+            kwargs.pop('grab_result')
+        self._rigger_instance.fire_hook(hook_name, **kwargs)
 
 
 class RiggerClient(object):
