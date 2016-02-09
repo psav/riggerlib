@@ -655,15 +655,18 @@ class RiggerBasePlugin(object):
         inner.__wrapped__ = func
         return inner
 
-    def register_plugin_hook(self, event, callback, bg=False):
+    def register_plugin_hook(self, event, callback=None, bg=False):
         """
         Registers a plugins callback with the associated event. Each event can only have one
         plugin callback.
 
         For example, register_plugin_hook('start_test', self.start_test). The function will
         receive one parameter, and that will be the context variable which is passed from the
-        hook_fire.
+        hook_fire. Or you can omit the callback parameter, it will then infer the callback method
+        is called the same as the event.
         """
+        if callback is None:
+            callback = getattr(self, event)
         self.callbacks[event] = Rigger.create_callback(callback)
 
     def fire_hook(self, hook_name, **kwargs):
