@@ -594,8 +594,6 @@ class Rigger(object):
         obj = self.get_instance_obj(name)
         if obj:
             obj.configure(*args, **kwargs)
-        else:
-            print "Instance: [{}] does not exist, is your configuration correct?".format(name)
 
     @staticmethod
     def create_callback(callback, bg=False):
