@@ -2,9 +2,9 @@ import atexit
 import hashlib
 import json
 import multiprocessing
-import Queue
 import requests
 import random
+import six
 import string
 import sys
 import threading
@@ -19,10 +19,15 @@ from funcsigs import signature
 
 from .tools import recursive_update
 
+if sys.version_info > (3,):
+    from queue import Queue
+else:
+    from Queue import Queue
+
 _task_list = {}
 _queue_lock = threading.Lock()
-_global_queue = Queue.Queue()
-_background_queue = Queue.Queue()
+_global_queue = Queue()
+_background_queue = Queue()
 _global_queue_shutdown = False
 _background_queue_shutdown = False
 _server = None
@@ -32,8 +37,11 @@ def generate_random_string(size=8):
     size = int(size)
 
     def random_string_generator(size):
-        choice_chars = string.letters + string.digits
-        for x in xrange(size):
+        if sys.version_info > (3,):
+            choice_chars = string.ascii_lowercase + string.digits
+        else:
+            choice_chars = string.letters + string.digits
+        for x in six.moves.xrange(size):
             yield random.choice(choice_chars)
     return ''.join(random_string_generator(size))
 
@@ -201,11 +209,11 @@ class Rigger(object):
             with open(config_file, "r") as stream:
                 data = yaml.load(stream)
         except IOError:
-            print "!!! Configuration file could not be loaded...exiting"
+            print("!!! Configuration file could not be loaded...exiting")
             sys.exit(127)
         except Exception as e:
-            print e
-            print "!!! Error parsing Configuration file"
+            print(e)
+            print("!!! Error parsing Configuration file")
             sys.exit(127)
         self.config = data
 
@@ -226,7 +234,7 @@ class Rigger(object):
         self.instances = {}
         self._threaded = self.config.get("threaded", False)
         plugins = self.config.get("plugins", {})
-        for ident, config in plugins.iteritems():
+        for ident, config in six.iteritems(plugins):
             self.setup_instance(ident, config)
 
     def setup_instance(self, ident, config):
@@ -347,7 +355,7 @@ class Rigger(object):
 
         # Now fire off each plugin hook
         event_hooks = []
-        for instance_name, instance in self.instances.iteritems():
+        for instance_name, instance in six.iteritems(self.instances):
             callbacks = instance.obj.callbacks
             enabled = instance.data.get('enabled', None)
             if callbacks.get(hook_name) and enabled:
@@ -549,9 +557,9 @@ class Rigger(object):
             plugin_name: The name of the plugin.
         """
         if plugin_name in self.plugins:
-            print "Plugin name already taken [{}]".format(plugin_name)
+            print("Plugin name already taken [{}]".format(plugin_name))
         elif plugin_name is None:
-            print "Plugin name cannot be None"
+            print("Plugin name cannot be None")
         else:
             # print "Registering plugin {}".format(plugin_name)
             self.plugins[plugin_name] = cls
@@ -622,7 +630,7 @@ class Rigger(object):
         """
         "Logs" a message. It is expected that this be overidden.
         """
-        print message
+        print(message)
 
 
 class RiggerPluginInstance(object):

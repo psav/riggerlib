@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 from collections import Mapping
+import six
 
 
 def recursive_update(orig_dict, updates):
@@ -10,7 +11,7 @@ def recursive_update(orig_dict, updates):
         orig_dict: The original dict.
         updates: The updates to merge with the dictionary.
     """
-    for key, val in updates.iteritems():
+    for key, val in six.iteritems(updates):
         # If the item with update is a mapping, let's go deeper
         if isinstance(val, Mapping):
             orig_dict[key] = recursive_update(orig_dict.get(key, {}), val)
