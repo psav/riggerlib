@@ -38,6 +38,12 @@ def task_check():
     return zmq_communicate('task_check', tid=json_dict['tid'])
 
 
+@application.route('/task_delete/', methods=['GET', 'POST'])
+def task_delete():
+    json_dict = flask.request.get_json(force=True)
+    return zmq_communicate('task_delete', tid=json_dict['tid'])
+
+
 class RiggerServer(BaseApplication):
     """embedded rigger server, powered by gunicorns
 

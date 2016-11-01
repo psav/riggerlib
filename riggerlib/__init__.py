@@ -110,6 +110,9 @@ class Rigger(object):
                     with _queue_lock:
                         _global_queue.task_done()
                         _task_list[tid].status = Task.FINISHED
+                    if not _task_list[tid].json_dict.get('grab_result', None):
+                        del _task_list[tid]
+                    self.log_message(_task_list)
             else:
                 break
             time.sleep(0.1)
@@ -178,6 +181,13 @@ class Rigger(object):
                     zmq_reply('OK', **extra)
                 except KeyError:
                     zmq_reply('NOT FOUND')
+            elif event_name == 'task_delete':
+                try:
+                    tid = json_dict['tid']
+                    del _task_list[tid]
+                    zmq_reply('OK', tid=tid)
+                except KeyError:
+                    zmq_reply('OK', tid=tid)
             elif event_name == 'shutdown':
                 self.log_message("Shutdown initiated : {}".format(zmq_socket_address))
                 zmq_socket.close()
@@ -704,6 +714,7 @@ class RiggerClient(object):
                     time.sleep(0.1)
                     task = self.task_status(resp['tid'])
                     status = task["status"]
+                self.task_delete(resp['tid'])
                 return task["output"]
             else:
                 return None
@@ -717,6 +728,19 @@ class RiggerClient(object):
         headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
         try:
             r = self._session.post("http://{}:{}/task_check/".format(self.address, self.port),
+                data=json.dumps(raw_data), headers=headers)
+            resp = r.json()
+            return resp
+        except (requests.exceptions.ConnectionError):
+            return None
+        except Exception:
+            return None
+
+    def task_delete(self, tid):
+        raw_data = {'tid': tid}
+        headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+        try:
+            r = self._session.post("http://{}:{}/task_delete/".format(self.address, self.port),
                 data=json.dumps(raw_data), headers=headers)
             resp = r.json()
             return resp
