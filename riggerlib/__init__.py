@@ -179,6 +179,7 @@ class Rigger(object):
                 except KeyError:
                     zmq_reply('NOT FOUND')
             elif event_name == 'shutdown':
+                self.log_message("Shutdown initiated : {}".format(zmq_socket_address))
                 zmq_socket.close()
                 shutdown()
             elif event_name == 'ping':
