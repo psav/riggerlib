@@ -112,7 +112,6 @@ class Rigger(object):
                         _task_list[tid].status = Task.FINISHED
                     if not _task_list[tid].json_dict.get('grab_result', None):
                         del _task_list[tid]
-                    self.log_message(_task_list)
             else:
                 break
             time.sleep(0.1)
