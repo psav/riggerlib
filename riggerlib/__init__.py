@@ -1,9 +1,6 @@
 import atexit
 import hashlib
-import json
-import multiprocessing
 import Queue
-import requests
 import random
 import string
 import sys
@@ -189,6 +186,7 @@ class Rigger(object):
                     zmq_reply('OK', tid=tid)
             elif event_name == 'shutdown':
                 self.log_message("Shutdown initiated : {}".format(zmq_socket_address))
+                zmq_reply('OK')
                 zmq_socket.close()
                 shutdown()
             elif event_name == 'ping':
@@ -268,26 +266,12 @@ class Rigger(object):
         self._server_port = self.config.get('server_port', 21212)
         self._server_enable = self.config.get('server_enabled', False)
         if self._server_enable:
-            from riggerlib.wsgi import server_runner
-            zmq_socket_address = self.config.get('zmq_socket_address',
-                'tcp://{}:{}'.format(self._server_hostname, self._server_port + 1))
-
+            zmq_socket_address = 'tcp://{}:{}'.format(self._server_hostname, self._server_port)
             # set up reciever thread for zmq event handling
             zeh = threading.Thread(target=self.zmq_event_handler, args=(zmq_socket_address,))
             zeh.daemon = True
             zeh.start()
 
-            # start the web server
-            server_options = {
-                'bind': '{}:{}'.format(self._server_hostname, self._server_port),
-                'loglevel': 'error',
-                'proc_name': 'riggerlib-wsgi-worker',
-                'workers': 4
-            }
-            _server = multiprocessing.Process(target=server_runner,
-                args=(zmq_socket_address, server_options),
-                name='riggerlib-wsgi')
-            _server.start()
             atexit.register(shutdown)
 
     def fire_hook(self, hook_name, **kwargs):
@@ -697,65 +681,70 @@ class RiggerClient(object):
 
     def __init__(self, address, port):
         self.address = address
-        self.port = int(port)
-        self._session = requests.Session()
+        self.port = str(port)
+        self.ctx = zmq.Context()
+        self._zmq_socket = None
+        self.ready = False
+
+    @property
+    def zmq(self):
+        if self.ready:
+            if not self._zmq_socket:
+                self._zmq_socket = self.ctx.socket(zmq.REQ)
+                self._zmq_socket.connect('tcp://{}:{}'.format(self.address, self.port))
+                self._zmq_socket.send_json({'event_name': 'ping'})
+                resp = self._zmq_socket.recv_json()
+                if resp['message'] != 'PONG':
+                    raise Exception('Riggerlib server not ready')
+            return self._zmq_socket
+        else:
+            return None
 
     def fire_hook(self, hook_name, grab_result=False, **kwargs):
-        raw_data = {'hook_name': hook_name, 'grab_result': grab_result, 'data': kwargs}
-        headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+        raw_data = {
+            'event_name': 'fire_hook',
+            'hook_name': hook_name,
+            'grab_result': grab_result,
+            'data': kwargs
+        }
         try:
-            r = self._session.post("http://{}:{}/fire_hook/".format(self.address, self.port),
-                data=json.dumps(raw_data), headers=headers)
-            resp = r.json()
+            self.zmq.send_json(raw_data)
+            response = self.zmq.recv_json()
             if grab_result:
                 status = 0
                 while status != Task.FINISHED:
                     time.sleep(0.1)
-                    task = self.task_status(resp['tid'])
+                    task = self.task_status(response['tid'])
                     status = task["status"]
-                self.task_delete(resp['tid'])
+                self.task_delete(response['tid'])
                 return task["output"]
             else:
                 return None
-        except (requests.exceptions.ConnectionError):
-            return None
         except Exception:
             return None
 
     def task_status(self, tid):
-        raw_data = {'tid': tid}
-        headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+        raw_data = {'event_name': 'task_check', 'tid': tid}
         try:
-            r = self._session.post("http://{}:{}/task_check/".format(self.address, self.port),
-                data=json.dumps(raw_data), headers=headers)
-            resp = r.json()
-            return resp
-        except (requests.exceptions.ConnectionError):
-            return None
+            self.zmq.send_json(raw_data)
+            response = self.zmq.recv_json()
+            return response
         except Exception:
             return None
 
     def task_delete(self, tid):
-        raw_data = {'tid': tid}
-        headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+        raw_data = {'event_name': 'task_delete', 'tid': tid}
         try:
-            r = self._session.post("http://{}:{}/task_delete/".format(self.address, self.port),
-                data=json.dumps(raw_data), headers=headers)
-            resp = r.json()
-            return resp
-        except (requests.exceptions.ConnectionError):
-            return None
+            self.zmq.send_json(raw_data)
+            response = self.zmq.recv_json()
+            return response
         except Exception:
             return None
 
     def terminate(self):
-        headers = {'Content-type': 'application/json', 'Accept': 'text/plain'}
+        raw_data = {'event_name': 'shutdown'}
         try:
-            r = self._session.post("http://{}:{}/terminate/".format(self.address, self.port),
-                                   data={}, headers=headers)
-            resp = r.json()
-            return resp
-        except (requests.exceptions.ConnectionError):
+            self.zmq.send_json(raw_data)
             return None
         except Exception:
             return None
