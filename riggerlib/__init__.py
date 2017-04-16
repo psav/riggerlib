@@ -1,7 +1,7 @@
-import atexit
 import hashlib
 import Queue
 import random
+import signal
 import string
 import sys
 import threading
@@ -15,14 +15,6 @@ import zmq
 from funcsigs import signature
 
 from .tools import recursive_update
-
-_task_list = {}
-_queue_lock = threading.Lock()
-_global_queue = Queue.Queue()
-_background_queue = Queue.Queue()
-_global_queue_shutdown = False
-_background_queue_shutdown = False
-_server = None
 
 
 def generate_random_string(size=8):
@@ -75,12 +67,14 @@ class Rigger(object):
         self.config_file = config_file
         self.squash_exceptions = False
         self.initialized = False
-        self._t = threading.Thread(target=self.process_queue)
-        self._t.daemon = False
-        self._t.start()
-        self._bt = threading.Thread(target=self.process_background_queue)
-        self._bt.daemon = False
-        self._bt.start()
+        self._task_list = {}
+        self._queue_lock = threading.Lock()
+        self._global_queue = Queue.Queue()
+        self._background_queue = Queue.Queue()
+        self._server_shutdown = False
+        self._zmq_event_handler_shutdown = False
+        self._global_queue_shutdown = False
+        self._background_queue_shutdown = False
 
     def process_queue(self):
         """
@@ -89,28 +83,25 @@ class Rigger(object):
         handled by the same handler called ``process_hook``. If there is an exception during
         processing, the exception is printed and execution continues.
         """
-        while True:
-            if not _global_queue_shutdown:
-                while not _global_queue.empty():
-                    with _queue_lock:
-                        tid = _global_queue.get()
-                        obj = _task_list[tid].json_dict
-                        _task_list[tid].status = Task.RUNNING
-                    try:
-                        loc, glo = self.process_hook(obj['hook_name'], **obj['data'])
-                        combined_dict = {}
-                        combined_dict.update(glo)
-                        combined_dict.update(loc)
-                        _task_list[tid].output = combined_dict
-                    except Exception as e:
-                        self.log_message(e)
-                    with _queue_lock:
-                        _global_queue.task_done()
-                        _task_list[tid].status = Task.FINISHED
-                    if not _task_list[tid].json_dict.get('grab_result', None):
-                        del _task_list[tid]
-            else:
-                break
+        while not self._global_queue_shutdown:
+            while not self._global_queue.empty():
+                with self._queue_lock:
+                    tid = self._global_queue.get()
+                    obj = self._task_list[tid].json_dict
+                    self._task_list[tid].status = Task.RUNNING
+                try:
+                    loc, glo = self.process_hook(obj['hook_name'], **obj['data'])
+                    combined_dict = {}
+                    combined_dict.update(glo)
+                    combined_dict.update(loc)
+                    self._task_list[tid].output = combined_dict
+                except Exception as e:
+                    self.log_message(e)
+                with self._queue_lock:
+                    self._global_queue.task_done()
+                    self._task_list[tid].status = Task.FINISHED
+                if not self._task_list[tid].json_dict.get('grab_result', None):
+                    del self._task_list[tid]
             time.sleep(0.1)
 
     def process_background_queue(self):
@@ -121,19 +112,16 @@ class Rigger(object):
         files, it has all the information it needs and the main process doesn't need to wait for it
         to complete.
         """
-        while True:
-            if not _background_queue_shutdown:
-                while not _background_queue.empty():
-                    obj = _background_queue.get()
-                    try:
-                        local, globals_updates = self.process_callbacks(obj['cb'], obj['kwargs'])
-                        with self.gdl:
-                            self.global_data = recursive_update(self.global_data, globals_updates)
-                    except Exception as e:
-                        self.log_message(e)
-                    _background_queue.task_done()
-            else:
-                break
+        while not self._background_queue_shutdown:
+            while not self._background_queue.empty():
+                obj = self._background_queue.get()
+                try:
+                    local, globals_updates = self.process_callbacks(obj['cb'], obj['kwargs'])
+                    with self.gdl:
+                        self.global_data = recursive_update(self.global_data, globals_updates)
+                except Exception as e:
+                    self.log_message(e)
+                self._background_queue.task_done()
             time.sleep(0.1)
 
     def zmq_event_handler(self, zmq_socket_address):
@@ -145,6 +133,7 @@ class Rigger(object):
         """
         ctx = zmq.Context()
         zmq_socket = ctx.socket(zmq.REP)
+        zmq_socket.set(zmq.RCVTIMEO, 300)
         zmq_socket.bind(zmq_socket_address)
 
         def zmq_reply(message, **extra):
@@ -153,8 +142,12 @@ class Rigger(object):
             zmq_socket.send_json(payload)
         bad_request = partial(zmq_reply, 'BAD REQUEST')
 
-        while True:
-            json_dict = zmq_socket.recv_json()
+        while not self._zmq_event_handler_shutdown:
+            try:
+                json_dict = zmq_socket.recv_json()
+            except zmq.Again:
+                continue
+
             try:
                 event_name = json_dict['event_name']
             except KeyError:
@@ -171,8 +164,8 @@ class Rigger(object):
                     tid = json_dict['tid']
                     extra = {
                         "tid": tid,
-                        "status": _task_list[tid].status,
-                        "output": _task_list[tid].output
+                        "status": self._task_list[tid].status,
+                        "output": self._task_list[tid].output
                     }
                     zmq_reply('OK', **extra)
                 except KeyError:
@@ -180,19 +173,21 @@ class Rigger(object):
             elif event_name == 'task_delete':
                 try:
                     tid = json_dict['tid']
-                    del _task_list[tid]
+                    del self._task_list[tid]
                     zmq_reply('OK', tid=tid)
                 except KeyError:
                     zmq_reply('OK', tid=tid)
             elif event_name == 'shutdown':
-                self.log_message("Shutdown initiated : {}".format(zmq_socket_address))
                 zmq_reply('OK')
-                zmq_socket.close()
-                shutdown()
+                # We gotta initiate server stop from here and stop this thread
+                self._server_shutdown = True
+                break
             elif event_name == 'ping':
                 zmq_reply('PONG')
             else:
                 bad_request()
+
+        zmq_socket.close()
 
     def read_config(self, config_file):
         """
@@ -261,18 +256,42 @@ class Rigger(object):
         """
         Starts the TCP server if the ``server_enabled`` is True in the config.
         """
-        global _server
         self._server_hostname = self.config.get('server_address', '127.0.0.1')
         self._server_port = self.config.get('server_port', 21212)
         self._server_enable = self.config.get('server_enabled', False)
         if self._server_enable:
+            globt = threading.Thread(target=self.process_queue, name="global_queue_processor")
+            globt.start()
+            bgt = threading.Thread(
+                target=self.process_background_queue, name="background_queue_processor")
+            bgt.start()
             zmq_socket_address = 'tcp://{}:{}'.format(self._server_hostname, self._server_port)
             # set up reciever thread for zmq event handling
-            zeh = threading.Thread(target=self.zmq_event_handler, args=(zmq_socket_address,))
-            zeh.daemon = True
+            zeh = threading.Thread(
+                target=self.zmq_event_handler, args=(zmq_socket_address,), name="zmq_event_handler")
             zeh.start()
+            # Main thread only
+            signal.signal(signal.SIGINT, lambda _, __: self.stop_server())
+            signal.signal(signal.SIGTERM, lambda _, __: self.stop_server())
+            while not self._server_shutdown:
+                time.sleep(0.3)
+            self.stop_server()
 
-            atexit.register(shutdown)
+    def stop_server(self):
+        """
+        Responsible for the following:
+            - stopping the zmq event handler (unless already stopped through 'terminate')
+            - stopping the global queue
+            - stopping the background queue
+        """
+        self.log_message("Shutdown initiated : {}".format(self._server_hostname))
+        # The order here is important
+        self._zmq_event_handler_shutdown = True
+        self._global_queue.join()
+        self._global_queue_shutdown = True
+        self._background_queue.join()
+        self._background_queue_shutdown = True
+        raise SystemExit
 
     def fire_hook(self, hook_name, **kwargs):
         """
@@ -291,10 +310,10 @@ class Rigger(object):
     def _fire_internal_hook(self, json_dict):
         task = Task(json_dict)
         tid = task.tid.hexdigest()
-        _task_list[tid] = task
-        if _global_queue:
-            with _queue_lock:
-                _global_queue.put(tid)
+        self._task_list[tid] = task
+        if self._global_queue:
+            with self._queue_lock:
+                self._global_queue.put(tid)
             return tid
         else:
             return None
@@ -347,9 +366,9 @@ class Rigger(object):
             if callbacks.get(hook_name) and enabled:
                 cb = callbacks[hook_name]
                 if instance.data.get('background', False):
-                    _background_queue.put({'cb': [cb], 'kwargs': kwargs})
+                    self._background_queue.put({'cb': [cb], 'kwargs': kwargs})
                 elif cb['bg']:
-                    _background_queue.put({'cb': [cb], 'kwargs': kwargs})
+                    self._background_queue.put({'cb': [cb], 'kwargs': kwargs})
                 else:
                     event_hooks.append(cb)
         kwargs_updates, globals_updates = self.process_callbacks(event_hooks, kwargs)
@@ -748,23 +767,3 @@ class RiggerClient(object):
             return None
         except Exception:
             return None
-
-
-def shutdown():
-    """
-    Responsible for simply closing the TCP SocketServer, and joining the Queue to finish any
-    unfinished tasks before exiting.
-    """
-    if _server:
-        _server.terminate()
-    global _global_queue
-    global _background_queue
-    global _global_queue_shutdown
-    global _background_queue_shutdown
-    if _global_queue and not _global_queue_shutdown:
-        _global_queue.join()
-        _global_queue_shutdown = True
-    if _background_queue and not _background_queue_shutdown:
-        _background_queue.join()
-        _background_queue_shutdown = True
-    raise SystemExit
