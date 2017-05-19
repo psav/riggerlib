@@ -688,7 +688,7 @@ class RiggerClient(object):
         self._lock = threading.Lock()
 
     def _request(self, data):
-        with self.lock:
+        with self._lock:
             self._zmq_socket.send_json(data)
             return self._zmq_socket.recv_json()
 
