@@ -685,6 +685,12 @@ class RiggerClient(object):
         self.ctx = zmq.Context()
         self._zmq_socket = None
         self.ready = False
+        self._lock = threading.Lock()
+
+    def _request(self, data):
+        with self._lock:
+            self._zmq_socket.send_json(data)
+            return self._zmq_socket.recv_json()
 
     @property
     def zmq(self):
@@ -692,9 +698,9 @@ class RiggerClient(object):
             if not self._zmq_socket:
                 self._zmq_socket = self.ctx.socket(zmq.REQ)
                 self._zmq_socket.connect('tcp://{}:{}'.format(self.address, self.port))
-                self._zmq_socket.send_json({'event_name': 'ping'})
-                resp = self._zmq_socket.recv_json()
+                resp = self._request({'event_name': 'ping'})
                 if resp['message'] != 'PONG':
+                    del self._zmq_socket
                     raise Exception('Riggerlib server not ready')
             return self._zmq_socket
         else:
@@ -708,8 +714,7 @@ class RiggerClient(object):
             'data': kwargs
         }
         try:
-            self.zmq.send_json(raw_data)
-            response = self.zmq.recv_json()
+            response = self._request(raw_data)
             if grab_result:
                 status = 0
                 while status != Task.FINISHED:
@@ -726,25 +731,20 @@ class RiggerClient(object):
     def task_status(self, tid):
         raw_data = {'event_name': 'task_check', 'tid': tid}
         try:
-            self.zmq.send_json(raw_data)
-            response = self.zmq.recv_json()
-            return response
+            return self._request(raw_data)
         except Exception:
             return None
 
     def task_delete(self, tid):
         raw_data = {'event_name': 'task_delete', 'tid': tid}
         try:
-            self.zmq.send_json(raw_data)
-            response = self.zmq.recv_json()
-            return response
+            return self._request(raw_data)
         except Exception:
             return None
 
     def terminate(self):
-        raw_data = {'event_name': 'shutdown'}
         try:
-            self.zmq.send_json(raw_data)
+            self._request({'event_name': 'shutdown'})
             return None
         except Exception:
             return None
