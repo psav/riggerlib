@@ -172,8 +172,9 @@ class Rigger(object):
                     extra = {
                         "tid": tid,
                         "status": _task_list[tid].status,
-                        "output": _task_list[tid].output
                     }
+                    if json_dict['grab_result']:
+                        extra["output"] = _task_list[tid].output
                     zmq_reply('OK', **extra)
                 except KeyError:
                     zmq_reply('NOT FOUND')
@@ -689,8 +690,8 @@ class RiggerClient(object):
 
     def _request(self, data):
         with self._lock:
-            self._zmq_socket.send_json(data)
-            return self._zmq_socket.recv_json()
+            self.zmq.send_json(data)
+            return self.zmq.recv_json()
 
     @property
     def zmq(self):
@@ -698,7 +699,8 @@ class RiggerClient(object):
             if not self._zmq_socket:
                 self._zmq_socket = self.ctx.socket(zmq.REQ)
                 self._zmq_socket.connect('tcp://{}:{}'.format(self.address, self.port))
-                resp = self._request({'event_name': 'ping'})
+                self._zmq_socket.send_json({'event_name': 'ping'})
+                resp = self._zmq_socket.recv_json()
                 if resp['message'] != 'PONG':
                     del self._zmq_socket
                     raise Exception('Riggerlib server not ready')
@@ -706,30 +708,34 @@ class RiggerClient(object):
         else:
             return None
 
-    def fire_hook(self, hook_name, grab_result=False, **kwargs):
+    def fire_hook(self, hook_name, grab_result=False, wait_for_task=False, **kwargs):
         raw_data = {
             'event_name': 'fire_hook',
             'hook_name': hook_name,
             'grab_result': grab_result,
+            'wait_for_task': wait_for_task,
             'data': kwargs
         }
         try:
             response = self._request(raw_data)
-            if grab_result:
+            if grab_result or wait_for_task:
                 status = 0
                 while status != Task.FINISHED:
                     time.sleep(0.1)
-                    task = self.task_status(response['tid'])
+                    task = self.task_status(response['tid'], grab_result)
                     status = task["status"]
                 self.task_delete(response['tid'])
-                return task["output"]
+                if grab_result:
+                    return task["output"]
+                else:
+                    return True
             else:
                 return None
         except Exception:
             return None
 
-    def task_status(self, tid):
-        raw_data = {'event_name': 'task_check', 'tid': tid}
+    def task_status(self, tid, grab_result):
+        raw_data = {'event_name': 'task_check', 'tid': tid, 'grab_result': grab_result}
         try:
             return self._request(raw_data)
         except Exception:
