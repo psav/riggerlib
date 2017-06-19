@@ -751,6 +751,7 @@ class RiggerClient(object):
     def terminate(self):
         try:
             self._request({'event_name': 'shutdown'})
+            self.ready = False
             return None
         except Exception:
             return None
