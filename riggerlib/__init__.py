@@ -1,5 +1,8 @@
+
+from __future__ import print_function
+import atexit
 import hashlib
-import Queue
+from six.moves.queue import Queue
 import random
 import signal
 import string
@@ -15,7 +18,6 @@ import zmq
 from funcsigs import signature
 
 from .tools import recursive_update
-
 
 def generate_random_string(size=8):
     size = int(size)
@@ -42,11 +44,6 @@ class Task():
     @property
     def tid(self):
         return self._tid
-
-
-class _realempty():
-    """ A dummy class to be able to differentiate between None and "Really None". """
-    pass
 
 
 class Rigger(object):
@@ -205,11 +202,11 @@ class Rigger(object):
             with open(config_file, "r") as stream:
                 data = yaml.load(stream)
         except IOError:
-            print "!!! Configuration file could not be loaded...exiting"
+            print("!!! Configuration file could not be loaded...exiting")
             sys.exit(127)
         except Exception as e:
-            print e
-            print "!!! Error parsing Configuration file"
+            print(e)
+            print("!!! Error parsing Configuration file")
             sys.exit(127)
         self.config = data
 
@@ -230,7 +227,7 @@ class Rigger(object):
         self.instances = {}
         self._threaded = self.config.get("threaded", False)
         plugins = self.config.get("plugins", {})
-        for ident, config in plugins.iteritems():
+        for ident, config in plugins.items():
             self.setup_instance(ident, config)
 
     def setup_instance(self, ident, config):
@@ -361,7 +358,7 @@ class Rigger(object):
 
         # Now fire off each plugin hook
         event_hooks = []
-        for instance_name, instance in self.instances.iteritems():
+        for instance_name, instance in self.instances.items():
             callbacks = instance.obj.callbacks
             enabled = instance.data.get('enabled', None)
             if callbacks.get(hook_name) and enabled:
@@ -505,11 +502,12 @@ class Rigger(object):
         Returns: A consolidated global/local namespace with local overrides.
         """
         returned_args = {}
-        returned_args.update({name: self.global_data[name] for name in args
-                              if not isinstance(self.global_data.get(name,
-                                                                     _realempty()), _realempty)})
-        returned_args.update({name: kwargs[name] for name in args
-                              if not isinstance(kwargs.get(name, _realempty()), _realempty)})
+        returned_args.update({
+            name: self.global_data[name] for name in args
+            if name in self.global_data})
+        returned_args.update({
+            name: kwargs[name] for name in args
+            if name in kwargs})
         return returned_args
 
     def register_hook_callback(self, hook_name=None, ctype="pre", callback=None, name=None):
@@ -563,9 +561,9 @@ class Rigger(object):
             plugin_name: The name of the plugin.
         """
         if plugin_name in self.plugins:
-            print "Plugin name already taken [{}]".format(plugin_name)
+            print("Plugin name already taken [{}]".format(plugin_name))
         elif plugin_name is None:
-            print "Plugin name cannot be None"
+            print("Plugin name cannot be None")
         else:
             # print "Registering plugin {}".format(plugin_name)
             self.plugins[plugin_name] = cls
@@ -636,7 +634,7 @@ class Rigger(object):
         """
         "Logs" a message. It is expected that this be overidden.
         """
-        print message
+        print(message)
 
 
 class RiggerPluginInstance(object):
