@@ -13,7 +13,12 @@ setup(
         "Operating System :: POSIX :: Linux",
         "License :: OSI Approved :: MIT License"],
     packages=['riggerlib'],
-    install_requires=['funcsigs', 'flask', 'gunicorn', 'pyzmq', 'requests', 'pyyaml'],
+    install_requires=[
+        'funcsigs',
+        'pyzmq',
+        'pyyaml',
+        'six',
+    ],
     include_package_data=True,
     url="https://github.com/psav/riggerlib",
 )
