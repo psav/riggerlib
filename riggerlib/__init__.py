@@ -1,9 +1,7 @@
-
 from __future__ import print_function
+
 import hashlib
 from six.moves.queue import Queue
-import random
-import string
 import sys
 import threading
 import time
@@ -14,35 +12,11 @@ from multiprocessing.pool import ThreadPool
 import yaml
 import zmq
 from funcsigs import signature
-
+from .client import RiggerClient
+from .task import Task
 from .tools import recursive_update
 
-
-def generate_random_string(size=8):
-    size = int(size)
-
-    def random_string_generator(size):
-        choice_chars = string.letters + string.digits
-        for x in xrange(size):
-            yield random.choice(choice_chars)
-    return ''.join(random_string_generator(size))
-
-
-class Task():
-    QUEUED = 0
-    RUNNING = 1
-    FINISHED = 2
-
-    def __init__(self, json_dict):
-        self.output = {}
-        self._tid = hashlib.sha1(str(time.time()) + json_dict['hook_name'] +
-                                 generate_random_string())
-        self.json_dict = json_dict
-        self.status = self.QUEUED
-
-    @property
-    def tid(self):
-        return self._tid
+__all__ = ["Rigger", "RiggerClient"]
 
 
 class Rigger(object):
@@ -685,91 +659,3 @@ class RiggerBasePlugin(object):
             self._rigger_instance.log_message('ERROR: Cannot grab result of a nested hook')
             kwargs.pop('grab_result')
         self._rigger_instance.fire_hook(hook_name, **kwargs)
-
-
-class RiggerClient(object):
-    """
-    A RiggerClient object allows TCP interaction with a Rigger instance running the TCP server.
-    It takes the hook fire information, serializes it to JSON format and passes it over the TCP
-    connection.
-
-    Args:
-        address: The address of the Rigger TCP server.
-        port: The port of the Rigger TCP server, usually 21212.
-    """
-
-    def __init__(self, address, port):
-        self.address = address
-        self.port = str(port)
-        self.ctx = zmq.Context()
-        self._zmq_socket = None
-        self.ready = False
-        self._lock = threading.Lock()
-
-    def _request(self, data):
-        with self._lock:
-            self.zmq.send_json(data)
-            return self.zmq.recv_json()
-
-    @property
-    def zmq(self):
-        if self.ready:
-            if not self._zmq_socket:
-                self._zmq_socket = self.ctx.socket(zmq.REQ)
-                self._zmq_socket.connect('tcp://{}:{}'.format(self.address, self.port))
-                self._zmq_socket.send_json({'event_name': 'ping'})
-                resp = self._zmq_socket.recv_json()
-                if resp['message'] != 'PONG':
-                    del self._zmq_socket
-                    raise Exception('Riggerlib server not ready')
-            return self._zmq_socket
-        else:
-            return None
-
-    def fire_hook(self, hook_name, grab_result=False, wait_for_task=False, **kwargs):
-        raw_data = {
-            'event_name': 'fire_hook',
-            'hook_name': hook_name,
-            'grab_result': grab_result,
-            'wait_for_task': wait_for_task,
-            'data': kwargs
-        }
-        try:
-            response = self._request(raw_data)
-            if grab_result or wait_for_task:
-                status = 0
-                while status != Task.FINISHED:
-                    time.sleep(0.1)
-                    task = self.task_status(response['tid'], grab_result)
-                    status = task["status"]
-                self.task_delete(response['tid'])
-                if grab_result:
-                    return task["output"]
-                else:
-                    return True
-            else:
-                return None
-        except Exception:
-            return None
-
-    def task_status(self, tid, grab_result):
-        raw_data = {'event_name': 'task_check', 'tid': tid, 'grab_result': grab_result}
-        try:
-            return self._request(raw_data)
-        except Exception:
-            return None
-
-    def task_delete(self, tid):
-        raw_data = {'event_name': 'task_delete', 'tid': tid}
-        try:
-            return self._request(raw_data)
-        except Exception:
-            return None
-
-    def terminate(self):
-        try:
-            self._request({'event_name': 'shutdown'})
-            self.ready = False
-            return None
-        except Exception:
-            return None
