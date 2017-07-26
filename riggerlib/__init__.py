@@ -3,7 +3,6 @@ from __future__ import print_function
 import hashlib
 from six.moves.queue import Queue
 import random
-import signal
 import string
 import sys
 import threading
@@ -66,12 +65,18 @@ class Rigger(object):
         self.initialized = False
         self._task_list = {}
         self._queue_lock = threading.Lock()
-        self._global_queue = Queue.Queue()
-        self._background_queue = Queue.Queue()
+        self._global_queue = Queue()
+        self._background_queue = Queue()
         self._server_shutdown = False
         self._zmq_event_handler_shutdown = False
         self._global_queue_shutdown = False
         self._background_queue_shutdown = False
+
+        globt = threading.Thread(target=self.process_queue, name="global_queue_processor")
+        globt.start()
+        bgt = threading.Thread(
+            target=self.process_background_queue, name="background_queue_processor")
+        bgt.start()
 
     def process_queue(self):
         """
@@ -252,17 +257,12 @@ class Rigger(object):
 
     def start_server(self):
         """
-        Starts the TCP server if the ``server_enabled`` is True in the config.
+        Starts the ZMQ server if the ``server_enabled`` is True in the config.
         """
         self._server_hostname = self.config.get('server_address', '127.0.0.1')
         self._server_port = self.config.get('server_port', 21212)
         self._server_enable = self.config.get('server_enabled', False)
         if self._server_enable:
-            globt = threading.Thread(target=self.process_queue, name="global_queue_processor")
-            globt.start()
-            bgt = threading.Thread(
-                target=self.process_background_queue, name="background_queue_processor")
-            bgt.start()
             zmq_socket_address = 'tcp://{}:{}'.format(self._server_hostname, self._server_port)
             # set up reciever thread for zmq event handling
             zeh = threading.Thread(
@@ -272,8 +272,6 @@ class Rigger(object):
             exect.start()
 
     def await_shutdown(self):
-        signal.signal(signal.SIGINT, lambda _, __: self.stop_server())
-        signal.signal(signal.SIGTERM, lambda _, __: self.stop_server())
         while not self._server_shutdown:
             time.sleep(0.3)
         self.stop_server()
