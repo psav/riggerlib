@@ -1,6 +1,5 @@
 
 from __future__ import print_function
-import atexit
 import hashlib
 from six.moves.queue import Queue
 import random
@@ -18,6 +17,7 @@ import zmq
 from funcsigs import signature
 
 from .tools import recursive_update
+
 
 def generate_random_string(size=8):
     size = int(size)
@@ -161,10 +161,10 @@ class Rigger(object):
                     tid = json_dict['tid']
                     extra = {
                         "tid": tid,
-                        "status": _task_list[tid].status,
+                        "status": self._task_list[tid].status,
                     }
                     if json_dict['grab_result']:
-                        extra["output"] = _task_list[tid].output
+                        extra["output"] = self._task_list[tid].output
                     zmq_reply('OK', **extra)
                 except KeyError:
                     zmq_reply('NOT FOUND')
@@ -268,12 +268,15 @@ class Rigger(object):
             zeh = threading.Thread(
                 target=self.zmq_event_handler, args=(zmq_socket_address,), name="zmq_event_handler")
             zeh.start()
-            # Main thread only
-            signal.signal(signal.SIGINT, lambda _, __: self.stop_server())
-            signal.signal(signal.SIGTERM, lambda _, __: self.stop_server())
-            while not self._server_shutdown:
-                time.sleep(0.3)
-            self.stop_server()
+            exect = threading.Thread(target=self.await_shutdown, name="executioner")
+            exect.start()
+
+    def await_shutdown(self):
+        signal.signal(signal.SIGINT, lambda _, __: self.stop_server())
+        signal.signal(signal.SIGTERM, lambda _, __: self.stop_server())
+        while not self._server_shutdown:
+            time.sleep(0.3)
+        self.stop_server()
 
     def stop_server(self):
         """
