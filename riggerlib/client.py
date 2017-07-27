@@ -2,6 +2,35 @@ import zmq
 import threading
 import time
 from .task import Task
+import warnings
+
+
+class ThreadLocalZMQSocketHolder(threading.local):
+    """
+    manages zmq sockets in thread local state
+    in order to avoid memory barrier issues
+    """
+    __slots__ = 'ready', 'url'
+
+    def _mq(self):
+        if not self.ready:
+            return
+        try:
+            return self._socket
+        except AttributeError:
+            socket = zmq.Context.instance().socket(zmq.REQ)
+            socket.connect(self.url)
+            socket.send_json({'event_name': 'ping'})
+            resp = socket.recv_json()
+            if resp['message'] != 'PONG':
+                raise Exception('Riggerlib server not ready')
+            self._socket = socket
+            return socket
+
+    def request(self, data):
+        if self.ready:
+            self._mq().send_json(data)
+            return self._mq().recv_json()
 
 
 class RiggerClient(object):
@@ -18,30 +47,29 @@ class RiggerClient(object):
     def __init__(self, address, port):
         self.address = address
         self.port = str(port)
-        self.ctx = zmq.Context()
-        self._zmq_socket = None
-        self.ready = False
-        self._lock = threading.Lock()
+        self._socket_holder = ThreadLocalZMQSocketHolder()
+        self._socket_holder.ready = False
+        self._socket_holder.url = 'tcp://{}:{}'.format(
+            self.address, self.port)
 
     def _request(self, data):
-        with self._lock:
-            self.zmq.send_json(data)
-            return self.zmq.recv_json()
+        return self._socket_holder.request(data)
+
+    @property
+    def ready(self):
+        return self._socket_holder.ready
+
+    @ready.setter
+    def ready(self, value):
+        self._socket_holder.ready = True
 
     @property
     def zmq(self):
-        if self.ready:
-            if not self._zmq_socket:
-                self._zmq_socket = self.ctx.socket(zmq.REQ)
-                self._zmq_socket.connect('tcp://{}:{}'.format(self.address, self.port))
-                self._zmq_socket.send_json({'event_name': 'ping'})
-                resp = self._zmq_socket.recv_json()
-                if resp['message'] != 'PONG':
-                    del self._zmq_socket
-                    raise Exception('Riggerlib server not ready')
-            return self._zmq_socket
-        else:
-            return None
+        warnings.warn(DeprecationWarning(
+            "RiggerClient.zmq is deprecated,"
+            " please stop using it,"
+            " there is no replacement"))
+        return self._socket_holder._mq()
 
     def fire_hook(self, hook_name, grab_result=False, wait_for_task=False, **kwargs):
         raw_data = {
