@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="riggerlib",
-    version='3.0.4',
+    use_scm_version=True,
     description="An event hook framework",
     author="Pete Savage, Sean Myers, Milan Falesnik",
     keywords=["event", "linux", "hook"],
@@ -19,6 +19,7 @@ setup(
         'pyyaml',
         'six',
     ],
+    setup_requires=['setuptools_scm'],
     include_package_data=True,
     url="https://github.com/psav/riggerlib",
 )
