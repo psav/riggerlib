@@ -19,7 +19,8 @@ def test_sockt_holder_thread_gets_different_socket():
     sockets = []
 
     def target():
-        sockets.append(holder._mq())
+        with holder.mq() as socket:
+            sockets.append(socket)
 
     t = threading.Thread(target=target)
     t.start()
@@ -30,6 +31,6 @@ def test_sockt_holder_thread_gets_different_socket():
     responder.start()
 
     t.join()
-
-    assert sockets[0] is not holder._mq()
+    with holder.mq() as socket:
+        assert sockets[0] is not socket
     responder.join()
