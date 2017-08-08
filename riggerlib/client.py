@@ -1,8 +1,32 @@
-import zmq
+import contextlib
 import threading
-import time
-from .task import Task
 import warnings
+import time
+
+import zmq
+
+from .task import Task
+
+REQUEST_TIMEOUT = 2500
+
+
+def _very_lazy_pirate_request(socket, data):
+    """gutted down version of lazy pirate
+
+    we presume that local server down means a unrecoverable crash in rigger,
+    thus we dont need to retry
+    """
+    poll = zmq.Poller()
+    poll.register(socket, zmq.POLLIN)
+    try:
+        socket.send_json(data)
+        socks = dict(poll.poll(REQUEST_TIMEOUT))
+        if socks[socket] == zmq.POLLIN:
+            return socket.recv_json()
+        else:
+            raise RuntimeError(socket, "failed to receive data")
+    finally:
+        poll.unregister(socket)
 
 
 class ThreadLocalZMQSocketHolder(threading.local):
@@ -12,25 +36,33 @@ class ThreadLocalZMQSocketHolder(threading.local):
     """
     __slots__ = 'ready', 'url'
 
-    def _mq(self):
-        if not self.ready:
-            return
+    def _ensure_connected(self):
+        assert self.ready
         try:
-            return self._socket
+            self._socket
         except AttributeError:
             socket = zmq.Context.instance().socket(zmq.REQ)
             socket.connect(self.url)
-            socket.send_json({'event_name': 'ping'})
-            resp = socket.recv_json()
+            resp = _very_lazy_pirate_request(socket, {'event_name': 'ping'})
             if resp['message'] != 'PONG':
                 raise Exception('Riggerlib server not ready')
             self._socket = socket
-            return socket
+
+    @contextlib.contextmanager
+    def mq(self):
+        self._ensure_connected()
+        try:
+            yield self._socket
+        except:
+            socket = self.__dict__.pop('_socket')
+            socket.setsockopt(zmq.LINGER, 0)
+            socket.close()
+            raise
 
     def request(self, data):
         if self.ready:
-            self._mq().send_json(data)
-            return self._mq().recv_json()
+            with self.mq() as socket:
+                return _very_lazy_pirate_request(socket, data)
 
 
 class RiggerClient(object):
