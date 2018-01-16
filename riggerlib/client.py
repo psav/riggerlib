@@ -24,7 +24,7 @@ def _very_lazy_pirate_request(socket, data):
         if socks[socket] == zmq.POLLIN:
             return socket.recv_json()
         else:
-            raise RuntimeError(socket, "failed to receive data")
+            raise RuntimeError(socket, "yarr me hearties, me socket failed to receive data!")
     finally:
         poll.unregister(socket)
 
