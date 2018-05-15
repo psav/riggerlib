@@ -23,8 +23,10 @@ class Task():
 
     def __init__(self, json_dict):
         self.output = {}
-        self._tid = hashlib.sha1(str(time.time()) + json_dict['hook_name'] +
-                                 generate_random_string())
+        self._tid = hashlib.sha1("{}{}{}".format(
+            str(time.time()), json_dict['hook_name'],
+            generate_random_string().encode('ascii')).encode('ascii')
+        )
         self.json_dict = json_dict
         self.status = self.QUEUED
 
