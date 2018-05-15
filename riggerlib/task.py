@@ -11,7 +11,7 @@ def generate_random_string(size=8):
 
     def random_string_generator(size):
         choice_chars = string.ascii_letters + string.digits
-        for x in xrange(size):
+        for x in range(size):
             yield random.choice(choice_chars)
     return ''.join(random_string_generator(size))
 
