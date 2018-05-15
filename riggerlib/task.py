@@ -10,7 +10,7 @@ def generate_random_string(size=8):
     size = int(size)
 
     def random_string_generator(size):
-        choice_chars = string.letters + string.digits
+        choice_chars = string.ascii_letters + string.digits
         for x in xrange(size):
             yield random.choice(choice_chars)
     return ''.join(random_string_generator(size))
