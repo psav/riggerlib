@@ -21,6 +21,10 @@ def _very_lazy_pirate_request(socket, data):
     try:
         socket.send_json(data)
         socks = dict(poll.poll(REQUEST_TIMEOUT))
+        if not socks:
+            # This seem to happen when the socket is not connected.
+            raise RuntimeError('No result from polling the {}.'.format(poll))
+
         if socks[socket] == zmq.POLLIN:
             return socket.recv_json()
         else:
@@ -41,17 +45,16 @@ class ThreadLocalZMQSocketHolder(threading.local):
         try:
             self._socket
         except AttributeError:
-            socket = zmq.Context.instance().socket(zmq.REQ)
+            self._socket = socket = zmq.Context.instance().socket(zmq.REQ)
             socket.connect(self.url)
             resp = _very_lazy_pirate_request(socket, {'event_name': 'ping'})
             if resp['message'] != 'PONG':
                 raise Exception('Riggerlib server not ready')
-            self._socket = socket
 
     @contextlib.contextmanager
     def mq(self):
-        self._ensure_connected()
         try:
+            self._ensure_connected()
             yield self._socket
         except:
             socket = self.__dict__.pop('_socket')
